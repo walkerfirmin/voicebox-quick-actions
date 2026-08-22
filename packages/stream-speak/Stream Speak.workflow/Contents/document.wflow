@@ -1,0 +1,340 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>AMApplicationBuild</key>
+	<string>523</string>
+	<key>AMApplicationVersion</key>
+	<string>2.10</string>
+	<key>AMDocumentVersion</key>
+	<string>2</string>
+	<key>actions</key>
+	<array>
+		<dict>
+			<key>action</key>
+			<dict>
+				<key>AMAccepts</key>
+				<dict>
+					<key>Container</key>
+					<string>List</string>
+					<key>Optional</key>
+					<true/>
+					<key>Types</key>
+					<array>
+						<string>com.apple.cocoa.string</string>
+					</array>
+				</dict>
+				<key>AMActionVersion</key>
+				<string>2.0.3</string>
+				<key>AMApplication</key>
+				<array>
+					<string>Automator</string>
+				</array>
+				<key>AMParameterProperties</key>
+				<dict>
+					<key>COMMAND_STRING</key>
+					<dict/>
+					<key>CheckedForUserDefaultShell</key>
+					<dict/>
+					<key>inputMethod</key>
+					<dict/>
+					<key>shell</key>
+					<dict/>
+					<key>source</key>
+					<dict/>
+				</dict>
+				<key>AMProvides</key>
+				<dict>
+					<key>Container</key>
+					<string>List</string>
+					<key>Types</key>
+					<array>
+						<string>com.apple.cocoa.string</string>
+					</array>
+				</dict>
+				<key>ActionBundlePath</key>
+				<string>/System/Library/Automator/Run Shell Script.action</string>
+				<key>ActionName</key>
+				<string>Run Shell Script</string>
+				<key>ActionParameters</key>
+				<dict>
+					<key>COMMAND_STRING</key>
+					<string>set -euo pipefail
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+
+vb_fail() {
+  osascript &gt;/dev/null 2&gt;&amp;1 &lt;&lt;EOF
+tell application "System Events" to activate
+display alert "Voicebox" message $(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$1")
+EOF
+  echo "FAIL $1" &gt;&gt; /tmp/vb-speak-selection.log
+  exit 1
+}
+
+vb_ok() {
+  osascript -e "display notification \"$1\" with title \"Voicebox\"" &gt;/dev/null 2&gt;&amp;1 || true
+}
+
+vb_base() {
+  if [[ -n "${VOICEBOX_API:-}" ]]; then
+    echo "${VOICEBOX_API%/}"
+    return
+  fi
+  local port
+  port="$(ps -axo command= | python3 -c 'import sys,re
+for line in sys.stdin:
+    m = re.search(r"voicebox-server.*--port\s+(\d+)", line)
+    if m:
+        print(m.group(1))
+        break
+')"
+  if [[ -n "$port" ]]; then
+    echo "http://127.0.0.1:${port}"
+  else
+    echo "http://127.0.0.1:17493"
+  fi
+}
+
+vb_ensure() {
+  local api tries
+  api="$(vb_base)"
+  if curl -sf --max-time 2 "${api}/health" &gt;/dev/null 2&gt;&amp;1; then
+    printf "%s" "$api"
+    return
+  fi
+  vb_ok "Starting Voicebox…"
+  open -a Voicebox &gt;/dev/null 2&gt;&amp;1 || true
+  tries=0
+  while (( tries &lt; 20 )); do
+    sleep 1
+    api="$(vb_base)"
+    if curl -sf --max-time 2 "${api}/health" &gt;/dev/null 2&gt;&amp;1; then
+      printf "%s" "$api"
+      return
+    fi
+    tries=$((tries + 1))
+  done
+  vb_fail "Voicebox is not running. Open Voicebox and try again."
+}
+
+vb_read_text() {
+  local t=""
+  if [[ $# -gt 0 ]]; then
+    t="$*"
+  elif [[ -p /dev/stdin || ! -t 0 ]]; then
+    t="$(cat | tr -d '\000-\010\013\014\016-\031\177')"
+  fi
+  printf "%s" "$t"
+}
+
+vb_choose_profile() {
+  local api="$1" out rc
+  set +e
+  out="$(vb_pick_profile "$api")"
+  rc=$?
+  set -e
+  if [[ $rc -eq 0 &amp;&amp; -z "$out" ]]; then
+    exit 0
+  fi
+  if [[ $rc -ne 0 || -z "$out" ]]; then
+    vb_fail "Could not list Voicebox voices. Is Voicebox running?"
+  fi
+  printf "%s" "$out"
+}
+
+vb_pick_profile() {
+  local api="$1"
+  python3 - "$api" &lt;&lt;'PY'
+import json, os, subprocess, sys, tempfile, urllib.request
+from pathlib import Path
+
+api = sys.argv[1]
+log = Path("/tmp/vb-speak-selection.log")
+def logw(msg):
+    prev = log.read_text() if log.exists() else ""
+    log.write_text(prev + msg + "\n")
+
+forced = os.environ.get("VOICEBOX_PROFILE", "").strip()
+last_path = Path.home() / "Library/Application Support/voicebox-quick-actions/last-profile.txt"
+try:
+    profiles = json.loads(urllib.request.urlopen(api + "/profiles", timeout=15).read())
+except Exception as e:
+    logw(f"list failed: {e}")
+    print(f"ERR list failed: {e}", file=sys.stderr)
+    sys.exit(2)
+if not profiles:
+    logw("no profiles")
+    sys.exit(2)
+by_name = {p["name"]: p["id"] for p in profiles}
+names = [p["name"] for p in profiles]
+
+def emit(name):
+    last_path.parent.mkdir(parents=True, exist_ok=True)
+    last_path.write_text(name + "\n", encoding="utf-8")
+    print(by_name[name])
+    print(name)
+
+if forced:
+    match = next((n for n in names if n.lower() == forced.lower()), None)
+    if not match:
+        logw(f"VOICEBOX_PROFILE not found: {forced}")
+        sys.exit(2)
+    emit(match)
+    sys.exit(0)
+
+last = last_path.read_text(encoding="utf-8").strip() if last_path.exists() else ""
+default = last if last in names else names[0]
+quoted = ", ".join(json.dumps(n) for n in names)
+script = f"""
+tell application "System Events" to activate
+delay 0.15
+set voiceNames to {{{quoted}}}
+set theChoice to choose from list voiceNames with title "Voicebox" with prompt "Choose a Voicebox voice" default items {{{json.dumps(default)}}} OK button name "Speak" cancel button name "Cancel"
+if theChoice is false then
+  return "CANCEL"
+end if
+return item 1 of theChoice
+"""
+with tempfile.NamedTemporaryFile("w", suffix=".applescript", delete=False) as fh:
+    fh.write(script)
+    path = fh.name
+try:
+    out = subprocess.check_output(["osascript", path], text=True).strip()
+finally:
+    Path(path).unlink(missing_ok=True)
+logw(f"picker out={out!r}")
+if out in ("", "CANCEL", "false"):
+    sys.exit(0)
+emit(out)
+PY
+}
+
+vb_srt_text() {
+  python3 - "$1" &lt;&lt;'PY'
+import re, sys
+from pathlib import Path
+p = Path(sys.argv[1])
+if not p.exists():
+    sys.exit(0)
+lines = []
+for line in p.read_text(encoding="utf-8", errors="replace").splitlines():
+    line = line.strip()
+    if not line or re.fullmatch(r"\d+", line) or re.match(r"\d{2}:\d{2}:\d{2}[,.]\d+", line):
+        continue
+    lines.append(line)
+print(" ".join(lines))
+PY
+}
+
+vb_json_field() {
+  python3 -c 'import json,sys; d=json.loads(sys.stdin.read() or "{}"); print(d.get(sys.argv[1] or "") or d.get("text") or d.get("transcript") or "")' "$1"
+}
+
+vb_transcribe_file() {
+  local api="$1" f="$2"
+  curl -sf --max-time 120 -X POST "${api}/transcribe" -F "file=@${f}" | python3 -c 'import json,sys
+d=json.loads(sys.stdin.read() or "{}")
+print(d.get("text") or d.get("transcript") or d.get("transcription") or "")'
+}
+
+API="$(vb_ensure)"
+TEXT="$(vb_read_text "$@")"
+if [[ -z "${TEXT//[$' \t\n\r']/}" ]]; then
+  vb_fail "No text selected. Highlight text, then run Stream Speak from the Services menu."
+fi
+PICK="$(vb_choose_profile "$API")"
+PID="$(printf "%s\n" "$PICK" | sed -n '1p')"
+NAME="$(printf "%s\n" "$PICK" | sed -n '2p')"
+BODY="$(python3 -c 'import json,sys; print(json.dumps({"profile_id": sys.argv[1], "text": sys.argv[2], "engine": "qwen", "language": "en"}))' "$PID" "$TEXT")"
+TMP="$(mktemp -t vbstream)"
+HDR="$(mktemp -t vbhdr)"
+CODE="$(curl -sS --max-time 120 -X POST "${API}/generate/stream" -H "Content-Type: application/json" -d "$BODY" -D "$HDR" -o "$TMP" -w "%{http_code}" || true)"
+CT="$(python3 -c 'import sys
+p=open(sys.argv[1],encoding="utf-8",errors="replace").read().lower()
+print("audio" if "content-type:" in p and "audio" in p else "other")
+' "$HDR")"
+if [[ "$CODE" == "200" &amp;&amp; "$CT" == "audio" ]]; then
+  afplay "$TMP" || vb_fail "Could not play streamed audio."
+else
+  SBODY="$(python3 -c 'import json,sys; print(json.dumps({"text": sys.argv[1], "profile": sys.argv[2], "personality": False, "engine": "qwen"}))' "$TEXT" "$NAME")"
+  curl -sf --max-time 120 -X POST "${API}/speak" -H "Content-Type: application/json" -d "$SBODY" &gt;/dev/null \
+    || vb_fail "Stream failed; speak fallback also failed."
+  vb_ok "Played via /speak (${NAME})."
+fi
+rm -f "$TMP" "$HDR"
+</string>
+					<key>CheckedForUserDefaultShell</key>
+					<true/>
+					<key>inputMethod</key>
+					<integer>0</integer>
+					<key>shell</key>
+					<string>/bin/zsh</string>
+					<key>source</key>
+					<string></string>
+				</dict>
+				<key>BundleIdentifier</key>
+				<string>com.apple.RunShellScript</string>
+				<key>CFBundleVersion</key>
+				<string>2.0.3</string>
+				<key>CanShowSelectedItemsWhenRun</key>
+				<false/>
+				<key>CanShowWhenRun</key>
+				<true/>
+				<key>Category</key>
+				<array>
+					<string>AMCategoryUtilities</string>
+				</array>
+				<key>Class Name</key>
+				<string>RunShellScriptAction</string>
+				<key>InputUUID</key>
+				<string>381D10F4-5071-587D-9252-CB4C0F26B0DA</string>
+				<key>Keywords</key>
+				<array>
+					<string>Shell</string>
+					<string>Script</string>
+					<string>Command</string>
+					<string>Run</string>
+					<string>Unix</string>
+				</array>
+				<key>OutputUUID</key>
+				<string>616395F9-38F1-5AFA-BE4A-E95CEFC56361</string>
+				<key>UUID</key>
+				<string>DA61FC1F-8142-5949-83C9-16E42931141C</string>
+				<key>UnlocalizedApplications</key>
+				<array>
+					<string>Automator</string>
+				</array>
+				<key>isViewVisible</key>
+				<integer>1</integer>
+			</dict>
+			<key>isViewVisible</key>
+			<integer>1</integer>
+		</dict>
+	</array>
+	<key>connectors</key>
+	<dict/>
+	<key>workflowMetaData</key>
+	<dict>
+		<key>inputTypeIdentifier</key>
+		<string>com.apple.Automator.text</string>
+		<key>outputTypeIdentifier</key>
+		<string>com.apple.Automator.nothing</string>
+		<key>presentationMode</key>
+		<integer>11</integer>
+		<key>processesInput</key>
+		<false/>
+		<key>serviceInputTypeIdentifier</key>
+		<string>com.apple.Automator.text</string>
+		<key>serviceOutputTypeIdentifier</key>
+		<string>com.apple.Automator.nothing</string>
+		<key>serviceProcessesInput</key>
+		<false/>
+		<key>systemImageName</key>
+		<string>NSActionTemplate</string>
+		<key>useAutomaticInputType</key>
+		<true/>
+		<key>workflowTypeIdentifier</key>
+		<string>com.apple.Automator.servicesMenu</string>
+	</dict>
+</dict>
+</plist>

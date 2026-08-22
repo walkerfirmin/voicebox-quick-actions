@@ -1,0 +1,15 @@
+{
+  "id": "com.voicebox.quickaction.export-voice",
+  "name": "Export Voice",
+  "version": "1.0.0",
+  "author": "Voicebox",
+  "readme": "README.md",
+  "workflow": "Export Voice.workflow",
+  "workflowZip": "workflow.zip",
+  "servicesReceives": [],
+  "dependencies": {
+    "brew": []
+  },
+  "minMacOS": "13.0",
+  "checksum": ""
+}

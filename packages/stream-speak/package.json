@@ -1,0 +1,17 @@
+{
+  "id": "com.voicebox.quickaction.stream-speak",
+  "name": "Stream Speak",
+  "version": "1.0.0",
+  "author": "Voicebox",
+  "readme": "README.md",
+  "workflow": "Stream Speak.workflow",
+  "workflowZip": "workflow.zip",
+  "servicesReceives": [
+    "text"
+  ],
+  "dependencies": {
+    "brew": []
+  },
+  "minMacOS": "13.0",
+  "checksum": ""
+}

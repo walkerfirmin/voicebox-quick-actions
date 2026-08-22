@@ -1,0 +1,17 @@
+{
+  "id": "com.voicebox.quickaction.import-voice-zip",
+  "name": "Import Voice ZIP",
+  "version": "1.0.0",
+  "author": "Voicebox",
+  "readme": "README.md",
+  "workflow": "Import Voice ZIP.workflow",
+  "workflowZip": "workflow.zip",
+  "servicesReceives": [
+    "files"
+  ],
+  "dependencies": {
+    "brew": []
+  },
+  "minMacOS": "13.0",
+  "checksum": ""
+}

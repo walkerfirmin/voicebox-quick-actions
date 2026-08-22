@@ -1,0 +1,17 @@
+{
+  "id": "com.voicebox.quickaction.new-cloned-voice",
+  "name": "New Cloned Voice",
+  "version": "1.0.0",
+  "author": "Voicebox",
+  "readme": "README.md",
+  "workflow": "New Cloned Voice.workflow",
+  "workflowZip": "workflow.zip",
+  "servicesReceives": [
+    "files"
+  ],
+  "dependencies": {
+    "brew": []
+  },
+  "minMacOS": "13.0",
+  "checksum": ""
+}

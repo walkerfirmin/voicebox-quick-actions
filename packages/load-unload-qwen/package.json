@@ -1,0 +1,15 @@
+{
+  "id": "com.voicebox.quickaction.load-unload-qwen",
+  "name": "Load or Unload Qwen",
+  "version": "1.0.0",
+  "author": "Voicebox",
+  "readme": "README.md",
+  "workflow": "Load or Unload Qwen.workflow",
+  "workflowZip": "workflow.zip",
+  "servicesReceives": [],
+  "dependencies": {
+    "brew": []
+  },
+  "minMacOS": "13.0",
+  "checksum": ""
+}

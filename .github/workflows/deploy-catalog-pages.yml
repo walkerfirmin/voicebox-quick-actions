@@ -1,0 +1,47 @@
+name: Deploy Quick Actions Catalog
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "index.json"
+      - "packages/**"
+      - "scripts/build-quick-actions-catalog.sh"
+      - ".github/workflows/deploy-catalog-pages.yml"
+      - "README.md"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages-catalog
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build catalog site
+        run: ./scripts/build-quick-actions-catalog.sh build/catalog-site
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: build/catalog-site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

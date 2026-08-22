@@ -1,0 +1,17 @@
+{
+  "id": "com.voicebox.quickaction.generate-wav-from-text",
+  "name": "Generate WAV from Text",
+  "version": "1.0.0",
+  "author": "Voicebox",
+  "readme": "README.md",
+  "workflow": "Generate WAV from Text.workflow",
+  "workflowZip": "workflow.zip",
+  "servicesReceives": [
+    "files"
+  ],
+  "dependencies": {
+    "brew": []
+  },
+  "minMacOS": "13.0",
+  "checksum": ""
+}

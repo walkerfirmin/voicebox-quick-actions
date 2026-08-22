@@ -1,0 +1,19 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Catalog zips are produced by scripts/build-quick-actions-catalog.sh for Pages
+*.zip
+workflow.zip
+
+# Build output
+build/
+
+# Secrets
+.env
+.env.*
+
+# Logs
+*.log

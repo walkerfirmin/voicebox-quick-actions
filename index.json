@@ -1,0 +1,160 @@
+{
+  "schemaVersion": 1,
+  "name": "Voicebox Quick Actions",
+  "updatedAt": "2026-08-22",
+  "packages": [
+    {
+      "id": "com.voicebox.quickaction.speak-selection",
+      "name": "Speak Selection",
+      "summary": "Speaks selected text in a Voicebox cloned voice on your speakers.",
+      "version": "1.0.0",
+      "tags": [
+        "text",
+        "voicebox",
+        "speak"
+      ],
+      "path": "packages/speak-selection"
+    },
+    {
+      "id": "com.voicebox.quickaction.generate-wav-from-text",
+      "name": "Generate WAV from Text",
+      "summary": "Turns a selected text file into a spoken WAV saved beside it.",
+      "version": "1.0.0",
+      "tags": [
+        "finder",
+        "voicebox",
+        "generate"
+      ],
+      "path": "packages/generate-wav-from-text"
+    },
+    {
+      "id": "com.voicebox.quickaction.transcribe-audio",
+      "name": "Transcribe Audio",
+      "summary": "Transcribes selected audio with Voicebox Whisper to a sidecar .txt.",
+      "version": "1.0.0",
+      "tags": [
+        "finder",
+        "voicebox",
+        "transcribe"
+      ],
+      "path": "packages/transcribe-audio"
+    },
+    {
+      "id": "com.voicebox.quickaction.new-cloned-voice",
+      "name": "New Cloned Voice",
+      "summary": "Creates a cloned Voicebox profile from selected audio and a transcript.",
+      "version": "1.0.0",
+      "tags": [
+        "finder",
+        "voicebox",
+        "clone"
+      ],
+      "path": "packages/new-cloned-voice"
+    },
+    {
+      "id": "com.voicebox.quickaction.import-voice-zip",
+      "name": "Import Voice ZIP",
+      "summary": "Imports an exported Voicebox profile zip into the local app.",
+      "version": "1.0.0",
+      "tags": [
+        "finder",
+        "voicebox",
+        "import"
+      ],
+      "path": "packages/import-voice-zip"
+    },
+    {
+      "id": "com.voicebox.quickaction.add-sample-to-voice",
+      "name": "Add Sample to Voice",
+      "summary": "Adds another reference recording to an existing cloned voice.",
+      "version": "1.0.0",
+      "tags": [
+        "finder",
+        "voicebox",
+        "clone"
+      ],
+      "path": "packages/add-sample-to-voice"
+    },
+    {
+      "id": "com.voicebox.quickaction.import-audio-into-voicebox",
+      "name": "Import Audio into Voicebox",
+      "summary": "Uploads a local recording into Voicebox History.",
+      "version": "1.0.0",
+      "tags": [
+        "finder",
+        "voicebox",
+        "history"
+      ],
+      "path": "packages/import-audio-into-voicebox"
+    },
+    {
+      "id": "com.voicebox.quickaction.set-profile-avatar",
+      "name": "Set Profile Avatar",
+      "summary": "Sets a Finder image as a Voicebox voice card avatar.",
+      "version": "1.0.0",
+      "tags": [
+        "finder",
+        "voicebox",
+        "avatar"
+      ],
+      "path": "packages/set-profile-avatar"
+    },
+    {
+      "id": "com.voicebox.quickaction.export-voice",
+      "name": "Export Voice",
+      "summary": "Exports a chosen voice profile zip to Downloads.",
+      "version": "1.0.0",
+      "tags": [
+        "voicebox",
+        "export"
+      ],
+      "path": "packages/export-voice"
+    },
+    {
+      "id": "com.voicebox.quickaction.load-unload-qwen",
+      "name": "Load or Unload Qwen",
+      "summary": "Loads Qwen 1.7B into memory or unloads the TTS model.",
+      "version": "1.0.0",
+      "tags": [
+        "voicebox",
+        "models"
+      ],
+      "path": "packages/load-unload-qwen"
+    },
+    {
+      "id": "com.voicebox.quickaction.clear-cache",
+      "name": "Clear Voicebox Cache",
+      "summary": "Clears Voicebox generation cache after a confirm dialog.",
+      "version": "1.0.0",
+      "tags": [
+        "voicebox",
+        "maintenance"
+      ],
+      "path": "packages/clear-cache"
+    },
+    {
+      "id": "com.voicebox.quickaction.compose-in-character",
+      "name": "Compose in Character",
+      "summary": "Copies a fresh in-character line for a chosen voice to the clipboard.",
+      "version": "1.0.0",
+      "tags": [
+        "text",
+        "voicebox",
+        "llm"
+      ],
+      "path": "packages/compose-in-character"
+    },
+    {
+      "id": "com.voicebox.quickaction.stream-speak",
+      "name": "Stream Speak",
+      "summary": "Speaks selected text via stream playback, falling back to /speak.",
+      "version": "1.0.0",
+      "tags": [
+        "text",
+        "voicebox",
+        "speak"
+      ],
+      "path": "packages/stream-speak"
+    }
+  ]
+}
