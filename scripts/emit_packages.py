@@ -206,11 +206,61 @@ CLIP_DIR="/Users/admin/Music/sample-audio-clips"
 TTS_HOST="http://127.0.0.1:8002"
 LAST="$HOME/Library/Application Support/voicebox-quick-actions/last-profile.txt"
 NAME="${VOICEBOX_PROFILE:-}"
-if [[ -z "$NAME" && -f "$LAST" ]]; then
-  NAME="$(python3 -c 'from pathlib import Path; print(Path.home().joinpath("Library/Application Support/voicebox-quick-actions/last-profile.txt").read_text().strip())')"
-fi
 if [[ -z "$NAME" ]]; then
-  NAME="Ad"
+  NAME="$(python3 - "$CLIP_DIR" "$LAST" <<'PY'
+import json, subprocess, sys, tempfile
+from pathlib import Path
+
+clip = Path(sys.argv[1])
+last_path = Path(sys.argv[2])
+voices = []
+seen = set()
+for wav in sorted(clip.glob("*.wav")):
+    stem = wav.stem
+    if stem.endswith("_10s"):
+        stem = stem[: -4]
+    label = " ".join(p.capitalize() if p.lower() != "and" else p for p in stem.split("_"))
+    if label.lower() in seen:
+        continue
+    seen.add(label.lower())
+    voices.append(label)
+if not voices:
+    sys.exit(2)
+last = last_path.read_text(encoding="utf-8").strip() if last_path.exists() else ""
+default = last if last in voices else voices[0]
+quoted = ", ".join(json.dumps(n) for n in voices)
+script = f"""
+tell application "Finder"
+  activate
+  set voiceNames to {{{quoted}}}
+  set theChoice to choose from list voiceNames with title "Speak Selection" with prompt "Choose a voice" default items {{{json.dumps(default)}}} OK button name "Speak" cancel button name "Cancel"
+  if theChoice is false then
+    return "CANCEL"
+  end if
+  return item 1 of theChoice
+end tell
+"""
+with tempfile.NamedTemporaryFile("w", suffix=".applescript", delete=False) as fh:
+    fh.write(script)
+    path = fh.name
+try:
+    out = subprocess.check_output(["osascript", path], text=True).strip()
+finally:
+    Path(path).unlink(missing_ok=True)
+if out in ("", "CANCEL", "false"):
+    sys.exit(0)
+last_path.parent.mkdir(parents=True, exist_ok=True)
+last_path.write_text(out + "\n", encoding="utf-8")
+print(out)
+PY
+)"
+  rc=$?
+  if [[ $rc -eq 0 && -z "$NAME" ]]; then
+    exit 0
+  fi
+  if [[ $rc -ne 0 || -z "$NAME" ]]; then
+    vb_fail "Could not show the voice picker."
+  fi
 fi
 mkdir -p "$(dirname "$LAST")"
 printf "%s\n" "$NAME" > "$LAST"
@@ -237,7 +287,7 @@ for cand in (wav.with_suffix(".srt"), clip / f"{slug}.srt", clip / f"{stem}.srt"
         srt = cand
         break
 ref = ""
-if srt.exists():
+if srt is not None:
     lines = []
     for line in srt.read_text(encoding="utf-8", errors="replace").splitlines():
         line = line.strip()
@@ -522,7 +572,7 @@ PACKAGES = [
         "receives": ["text"],
         "kind": "text",
         "file_types": [],
-        "how": "Select text → Services → **Speak Selection**. Speaks with the last voice (default Ad) using the same local MLX TTS server on port 8002 as Speak with MLX TTS Ad. Set `VOICEBOX_PROFILE` or edit `~/Library/Application Support/voicebox-quick-actions/last-profile.txt` to change voice (must match a sample in Music/sample-audio-clips).",
+        "how": "Select text → Services → **Speak Selection**. A Finder voice list appears (last voice is pre-selected). Audio plays via the local MLX TTS server on port 8002. Set `VOICEBOX_PROFILE` to skip the picker.",
     },
     {
         "slug": "generate-wav-from-text",
