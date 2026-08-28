@@ -1,10 +1,10 @@
 {
-  "id": "com.voicebox.quickaction.load-unload-qwen",
-  "name": "Load or Unload Qwen",
-  "version": "1.0.1",
+  "id": "com.voicebox.quickaction.load-voicebox-model",
+  "name": "Load Voicebox Model",
+  "version": "1.0.2",
   "author": "Voicebox",
   "readme": "README.md",
-  "workflow": "Load or Unload Qwen.workflow",
+  "workflow": "Load Voicebox Model.workflow",
   "workflowZip": "workflow.zip",
   "servicesReceives": [],
   "dependencies": {

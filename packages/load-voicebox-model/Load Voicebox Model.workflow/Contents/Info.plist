@@ -3,11 +3,11 @@
 <plist version="1.0">
 <dict>
 	<key>CFBundleName</key>
-	<string>Load or Unload Qwen</string>
+	<string>Load Voicebox Model</string>
 	<key>CFBundleIdentifier</key>
-	<string>com.voicebox.quickaction.load-unload-qwen</string>
+	<string>com.voicebox.quickaction.load-voicebox-model</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.0.1</string>
+	<string>1.0.2</string>
 	<key>CFBundleVersion</key>
 	<string>2</string>
 	<key>CFBundlePackageType</key>
@@ -18,7 +18,7 @@
 			<key>NSMenuItem</key>
 			<dict>
 				<key>default</key>
-				<string>Load or Unload Qwen</string>
+				<string>Load Voicebox Model</string>
 			</dict>
 			<key>NSMessage</key>
 			<string>runWorkflowAsService</string>

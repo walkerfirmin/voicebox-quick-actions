@@ -374,10 +374,22 @@ vb_voicebox_generate() {
   local rc err gen_id
   set +e
   err="$(/usr/bin/python3 - "$api" "$profile_id" "$text" &lt;&lt;'PY'
-import json, sys, urllib.error, urllib.request
+import json, os, sys, urllib.error, urllib.request
 
 api, profile_id, text = sys.argv[1:4]
-body = json.dumps({"profile_id": profile_id, "text": text}).encode()
+payload = {"profile_id": profile_id, "text": text}
+model_size = os.environ.get("VOICEBOX_MODEL_SIZE", "").strip()
+if not model_size:
+    try:
+        with urllib.request.urlopen(api.rstrip("/") + "/health", timeout=5) as r:
+            health = json.loads(r.read().decode() or "{}")
+        if health.get("model_loaded") and health.get("model_size"):
+            model_size = str(health["model_size"])
+    except Exception:
+        pass
+if model_size:
+    payload["model_size"] = model_size
+body = json.dumps(payload).encode()
 req = urllib.request.Request(
     api.rstrip("/") + "/generate",
     data=body,
@@ -446,11 +458,23 @@ vb_voicebox_stream() {
   mkdir -p "$(dirname "$out")"
   set +e
   err="$(/usr/bin/python3 - "$api" "$profile_id" "$text" "$out" &lt;&lt;'PY'
-import json, sys, urllib.error, urllib.request
+import json, os, sys, urllib.error, urllib.request
 from pathlib import Path
 
 api, profile_id, text, out = sys.argv[1:5]
-body = json.dumps({"profile_id": profile_id, "text": text}).encode()
+payload = {"profile_id": profile_id, "text": text}
+model_size = os.environ.get("VOICEBOX_MODEL_SIZE", "").strip()
+if not model_size:
+    try:
+        with urllib.request.urlopen(api.rstrip("/") + "/health", timeout=5) as r:
+            health = json.loads(r.read().decode() or "{}")
+        if health.get("model_loaded") and health.get("model_size"):
+            model_size = str(health["model_size"])
+    except Exception:
+        pass
+if model_size:
+    payload["model_size"] = model_size
+body = json.dumps(payload).encode()
 req = urllib.request.Request(
     api.rstrip("/") + "/generate/stream",
     data=body,
@@ -590,50 +614,199 @@ print(text)')"
   [[ -n "$text" ]] || vb_fail "Empty transcript for $(basename "$f")."
   printf "%s" "$text"
 }
-vb_shell_start "load-unload-qwen"
+vb_shell_start "load-voicebox-model"
 API="$(vb_ensure)"
 set +e
-CHOICE="$(python3 - "$LAST_VB" &lt;&lt;'PY'
-import json, subprocess, sys, tempfile
-from pathlib import Path
-items = ["Load Qwen 1.7B", "Unload model"]
-quoted = ", ".join(json.dumps(n) for n in items)
-script = f'''
-tell application "Finder"
-  activate
-  set theItems to {{{quoted}}}
-  set theChoice to choose from list theItems with title "Voicebox" with prompt "Voicebox model" default items {{"Load Qwen 1.7B"}} OK button name "Run" cancel button name "Cancel"
-  if theChoice is false then
-    return "CANCEL"
-  end if
-  return item 1 of theChoice
-end tell
-'''
-p = Path(tempfile.mkstemp(suffix=".applescript")[1])
-p.write_text(script)
+OUT="$(/usr/bin/python3 - "$API" &lt;&lt;'PY'
+from __future__ import annotations
+
+import json, os, subprocess, sys, tempfile, urllib.error, urllib.parse, urllib.request
+
+api = sys.argv[1]
+UNLOAD_LABEL = "Unload model"
+
+
+def fail(msg: str) -&gt; None:
+    print(msg, file=sys.stderr)
+    sys.exit(2)
+
+
+def fetch_models():
+    with urllib.request.urlopen(api.rstrip("/") + "/models/status", timeout=15) as r:
+        return json.loads(r.read().decode())["models"]
+
+
+def model_size_for(model_name: str):
+    upper = model_name.upper()
+    for size in ("0.6B", "1.7B", "3B", "1B"):
+        if size in upper:
+            return size
+    return None
+
+
+def post_json(url: str, payload: dict | None, timeout: int):
+    data = None if payload is None else json.dumps(payload).encode()
+    headers = {"Content-Type": "application/json"} if payload is not None else {}
+    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read().decode() or "{}")
+
+
+def load_model(model_name: str):
+    base = api.rstrip("/")
+    size = model_size_for(model_name)
+
+    def load_by_size(model_size: str):
+        req = urllib.request.Request(
+            f"{base}/models/load?model_size={urllib.parse.quote(model_size, safe='')}",
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=300) as r:
+            return json.loads(r.read().decode() or "{}")
+
+    try:
+        result = post_json(base + "/models/load", {"model_name": model_name}, 300)
+        msg = str(result.get("message", ""))
+        if "loaded successfully" in msg.lower():
+            if size and size not in msg:
+                return load_by_size(size)
+            if not size and model_name.lower() not in msg.lower():
+                fail(
+                    "This Voicebox build does not support loading that model via the API. "
+                    "Update Voicebox or load it from the app."
+                )
+        return result
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", "replace")[:300]
+        if not size:
+            fail(detail or f"Load failed (HTTP {e.code}).")
+        try:
+            return load_by_size(size)
+        except urllib.error.HTTPError as e2:
+            fail(e2.read().decode("utf-8", "replace")[:300] or f"Load failed (HTTP {e2.code}).")
+
+
+def unload_models(loaded_names: list[str]):
+    base = api.rstrip("/")
+    errors: list[str] = []
+    if loaded_names:
+        for name in loaded_names:
+            try:
+                post_json(f"{base}/models/{urllib.parse.quote(name, safe='')}/unload", None, 60)
+            except urllib.error.HTTPError as e:
+                errors.append(e.read().decode("utf-8", "replace")[:120])
+    else:
+        try:
+            post_json(base + "/models/unload", None, 60)
+        except urllib.error.HTTPError as e:
+            errors.append(e.read().decode("utf-8", "replace")[:120])
+    if errors and len(errors) == len(loaded_names or [""]):
+        fail(errors[0])
+
+
+def choose_from_list(items: list[str], prompt: str, default: str) -&gt; str:
+    if not items:
+        fail("No Voicebox models are available.")
+    if default not in items:
+        default = items[0]
+    quoted = ", ".join(json.dumps(item) for item in items)
+    script = (
+        "tell application \"Finder\"\n"
+        "  activate\n"
+        f"  set theItems to {{{quoted}}}\n"
+        f"  set theChoice to choose from list theItems with title \"Voicebox\" with prompt {json.dumps(prompt)} "
+        f"default items {{{json.dumps(default)}}} OK button name \"Run\" cancel button name \"Cancel\"\n"
+        "  if theChoice is false then\n"
+        "    return \"CANCEL\"\n"
+        "  end if\n"
+        "  return item 1 of theChoice\n"
+        "end tell\n"
+    )
+    path = tempfile.mkstemp(suffix=".applescript")[1]
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(script)
+    try:
+        out = subprocess.check_output(["osascript", path], text=True).strip()
+    finally:
+        os.unlink(path)
+    if out in ("", "CANCEL", "false"):
+        sys.exit(0)
+    return out
+
+
 try:
-    out = subprocess.check_output(["osascript", str(p)], text=True).strip()
-finally:
-    p.unlink(missing_ok=True)
-print(out)
+    models = fetch_models()
+except Exception as e:
+    fail(f"Could not list Voicebox models: {e}")
+
+downloaded = [m for m in models if m.get("downloaded")]
+if not downloaded:
+    fail("No Voicebox models are downloaded yet. Download a model in Voicebox first.")
+
+labels: list[str] = []
+label_to_name: dict[str, str] = {}
+loaded_names = [m["model_name"] for m in downloaded if m.get("loaded")]
+for model in downloaded:
+    label = model["display_name"]
+    if model.get("loaded"):
+        label += " (loaded)"
+    labels.append(label)
+    label_to_name[label] = model["model_name"]
+
+labels.append(UNLOAD_LABEL)
+default = next(
+  (label for label in labels if label_to_name.get(label) in loaded_names),
+  labels[0],
+)
+choice = choose_from_list(labels, "Choose a Voicebox model to load or unload", default)
+
+if choice == UNLOAD_LABEL:
+    if loaded_names:
+        if len(loaded_names) == 1:
+            unload_models(loaded_names)
+            print(f"UNLOAD:{loaded_names[0]}")
+        else:
+            unload_labels = [next(m["display_name"] for m in downloaded if m["model_name"] == n) for n in loaded_names]
+            unload_labels.append("Unload all loaded models")
+            picked = choose_from_list(
+                unload_labels,
+                "Choose a model to unload",
+                unload_labels[0],
+            )
+            if picked == "Unload all loaded models":
+                unload_models(loaded_names)
+                print("UNLOAD:all")
+            else:
+                name = next(m["model_name"] for m in downloaded if m["display_name"] == picked)
+                unload_models([name])
+                print(f"UNLOAD:{name}")
+    else:
+        unload_models([])
+        print("UNLOAD:default")
+else:
+    model_name = label_to_name[choice]
+    result = load_model(model_name)
+    print(f"LOAD:{model_name}|{choice}")
 PY
 )"
 rc=$?
 set -e
-if [[ $rc -ne 0 || "$CHOICE" == "CANCEL" || -z "$CHOICE" ]]; then
-  vb_log load-unload-qwen "picker cancelled"
+if [[ $rc -eq 2 ]]; then
+  vb_fail "${OUT:-Could not load or unload a Voicebox model.}"
+fi
+if [[ $rc -ne 0 || -z "$OUT" ]]; then
+  vb_log load-voicebox-model "picker cancelled"
   exit 0
 fi
-if [[ "$CHOICE" == "Load Qwen 1.7B" ]]; then
-  curl -sf --max-time 300 -X POST "${API}/models/load?model_size=1.7B" &gt;/dev/null \
-    || vb_fail "Load failed (the model may still be downloading)."
-  vb_log load-unload-qwen "load requested"
-  vb_ok "Load requested for Qwen 1.7B."
-else
-  curl -sf --max-time 60 -X POST "${API}/models/unload" &gt;/dev/null \
-    || vb_fail "Unload failed."
-  vb_log load-unload-qwen "unload requested"
+if [[ "$OUT" == UNLOAD:* ]]; then
+  vb_log load-voicebox-model "unload ${OUT#UNLOAD:}"
   vb_ok "Unload requested."
+else
+  NAME="${OUT#LOAD:}"
+  NAME="${NAME%%|*}"
+  DISPLAY="${OUT#*|}"
+  vb_log load-voicebox-model "load $NAME"
+  vb_ok "Load requested for ${DISPLAY%% (loaded)}."
 fi
 </string>
 					<key>CheckedForUserDefaultShell</key>
@@ -660,7 +833,7 @@ fi
 				<key>Class Name</key>
 				<string>RunShellScriptAction</string>
 				<key>InputUUID</key>
-				<string>BCE73DA8-5FB7-5116-A55F-A79457A3CB27</string>
+				<string>0A0DDFA5-2ABE-58C0-A1D2-812FA2BF0A82</string>
 				<key>Keywords</key>
 				<array>
 					<string>Shell</string>
@@ -670,9 +843,9 @@ fi
 					<string>Unix</string>
 				</array>
 				<key>OutputUUID</key>
-				<string>B3DF364A-B127-5B41-9214-BF1E13FE59C4</string>
+				<string>A6A5EBEB-9C37-5805-BD29-3ADB4D460240</string>
 				<key>UUID</key>
-				<string>2FD8397F-2595-51FC-84F3-59FC4BC4980F</string>
+				<string>0C87B373-76ED-5A90-B37D-827A638D6DEF</string>
 				<key>UnlocalizedApplications</key>
 				<array>
 					<string>Automator</string>

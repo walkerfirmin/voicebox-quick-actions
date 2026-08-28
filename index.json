@@ -7,7 +7,7 @@
       "id": "com.voicebox.quickaction.generate-wav-from-text",
       "name": "Generate WAV from Text",
       "summary": "Turns a selected text file into spoken WAV saved beside it.",
-      "version": "1.0.1",
+      "version": "1.0.2",
       "tags": [
         "finder",
         "voicebox",
@@ -19,7 +19,7 @@
       "id": "com.voicebox.quickaction.transcribe-audio",
       "name": "Transcribe Audio",
       "summary": "Transcribes selected audio with Voicebox Whisper to a sidecar .txt.",
-      "version": "1.0.1",
+      "version": "1.0.2",
       "tags": [
         "finder",
         "voicebox",
@@ -31,7 +31,7 @@
       "id": "com.voicebox.quickaction.import-voice-zip",
       "name": "Import Voice ZIP",
       "summary": "Imports an exported Voicebox profile zip into the local app.",
-      "version": "1.0.1",
+      "version": "1.0.2",
       "tags": [
         "finder",
         "voicebox",
@@ -43,7 +43,7 @@
       "id": "com.voicebox.quickaction.export-voice",
       "name": "Export Voice",
       "summary": "Exports a chosen voice profile zip to Downloads.",
-      "version": "1.0.1",
+      "version": "1.0.2",
       "tags": [
         "voicebox",
         "export"
@@ -51,21 +51,21 @@
       "path": "packages/export-voice"
     },
     {
-      "id": "com.voicebox.quickaction.load-unload-qwen",
-      "name": "Load or Unload Qwen",
-      "summary": "Loads Qwen 1.7B into memory or unloads the TTS model.",
-      "version": "1.0.1",
+      "id": "com.voicebox.quickaction.load-voicebox-model",
+      "name": "Load Voicebox Model",
+      "summary": "Loads or unloads a downloaded Voicebox TTS model from a menu.",
+      "version": "1.0.2",
       "tags": [
         "voicebox",
         "models"
       ],
-      "path": "packages/load-unload-qwen"
+      "path": "packages/load-voicebox-model"
     },
     {
       "id": "com.voicebox.quickaction.stream-speak",
       "name": "Stream Speak",
       "summary": "Streams selected text as WAV from Voicebox with chunked synthesis and gapless local playback.",
-      "version": "1.0.1",
+      "version": "1.0.2",
       "tags": [
         "text",
         "voicebox",

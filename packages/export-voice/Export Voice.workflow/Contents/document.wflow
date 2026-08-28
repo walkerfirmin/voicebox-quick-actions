@@ -374,10 +374,22 @@ vb_voicebox_generate() {
   local rc err gen_id
   set +e
   err="$(/usr/bin/python3 - "$api" "$profile_id" "$text" &lt;&lt;'PY'
-import json, sys, urllib.error, urllib.request
+import json, os, sys, urllib.error, urllib.request
 
 api, profile_id, text = sys.argv[1:4]
-body = json.dumps({"profile_id": profile_id, "text": text}).encode()
+payload = {"profile_id": profile_id, "text": text}
+model_size = os.environ.get("VOICEBOX_MODEL_SIZE", "").strip()
+if not model_size:
+    try:
+        with urllib.request.urlopen(api.rstrip("/") + "/health", timeout=5) as r:
+            health = json.loads(r.read().decode() or "{}")
+        if health.get("model_loaded") and health.get("model_size"):
+            model_size = str(health["model_size"])
+    except Exception:
+        pass
+if model_size:
+    payload["model_size"] = model_size
+body = json.dumps(payload).encode()
 req = urllib.request.Request(
     api.rstrip("/") + "/generate",
     data=body,
@@ -446,11 +458,23 @@ vb_voicebox_stream() {
   mkdir -p "$(dirname "$out")"
   set +e
   err="$(/usr/bin/python3 - "$api" "$profile_id" "$text" "$out" &lt;&lt;'PY'
-import json, sys, urllib.error, urllib.request
+import json, os, sys, urllib.error, urllib.request
 from pathlib import Path
 
 api, profile_id, text, out = sys.argv[1:5]
-body = json.dumps({"profile_id": profile_id, "text": text}).encode()
+payload = {"profile_id": profile_id, "text": text}
+model_size = os.environ.get("VOICEBOX_MODEL_SIZE", "").strip()
+if not model_size:
+    try:
+        with urllib.request.urlopen(api.rstrip("/") + "/health", timeout=5) as r:
+            health = json.loads(r.read().decode() or "{}")
+        if health.get("model_loaded") and health.get("model_size"):
+            model_size = str(health["model_size"])
+    except Exception:
+        pass
+if model_size:
+    payload["model_size"] = model_size
+body = json.dumps(payload).encode()
 req = urllib.request.Request(
     api.rstrip("/") + "/generate/stream",
     data=body,

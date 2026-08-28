@@ -54,4 +54,4 @@ done
 
 **Build first:** Stream Speak, Generate WAV from Text, Transcribe Audio, Import Voice ZIP.
 
-**Nice later:** Export Voice, Load or Unload Qwen.
+**Nice later:** Export Voice, Load Voicebox Model.

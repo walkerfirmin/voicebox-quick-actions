@@ -7,7 +7,7 @@
 	<key>CFBundleIdentifier</key>
 	<string>com.voicebox.quickaction.generate-wav-from-text</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.0.1</string>
+	<string>1.0.2</string>
 	<key>CFBundleVersion</key>
 	<string>2</string>
 	<key>CFBundlePackageType</key>

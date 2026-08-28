@@ -9,7 +9,7 @@ from pathlib import Path
 from xml.sax.saxutils import escape as xml_escape
 
 ROOT = Path("/Users/admin/git/voicebox-quick-actions")
-PACKAGE_VERSION = "1.0.1"
+PACKAGE_VERSION = "1.0.2"
 
 PRELUDE = r"""
 set -euo pipefail
@@ -326,10 +326,22 @@ vb_voicebox_generate() {
   local rc err gen_id
   set +e
   err="$(/usr/bin/python3 - "$api" "$profile_id" "$text" <<'PY'
-import json, sys, urllib.error, urllib.request
+import json, os, sys, urllib.error, urllib.request
 
 api, profile_id, text = sys.argv[1:4]
-body = json.dumps({"profile_id": profile_id, "text": text}).encode()
+payload = {"profile_id": profile_id, "text": text}
+model_size = os.environ.get("VOICEBOX_MODEL_SIZE", "").strip()
+if not model_size:
+    try:
+        with urllib.request.urlopen(api.rstrip("/") + "/health", timeout=5) as r:
+            health = json.loads(r.read().decode() or "{}")
+        if health.get("model_loaded") and health.get("model_size"):
+            model_size = str(health["model_size"])
+    except Exception:
+        pass
+if model_size:
+    payload["model_size"] = model_size
+body = json.dumps(payload).encode()
 req = urllib.request.Request(
     api.rstrip("/") + "/generate",
     data=body,
@@ -398,11 +410,23 @@ vb_voicebox_stream() {
   mkdir -p "$(dirname "$out")"
   set +e
   err="$(/usr/bin/python3 - "$api" "$profile_id" "$text" "$out" <<'PY'
-import json, sys, urllib.error, urllib.request
+import json, os, sys, urllib.error, urllib.request
 from pathlib import Path
 
 api, profile_id, text, out = sys.argv[1:5]
-body = json.dumps({"profile_id": profile_id, "text": text}).encode()
+payload = {"profile_id": profile_id, "text": text}
+model_size = os.environ.get("VOICEBOX_MODEL_SIZE", "").strip()
+if not model_size:
+    try:
+        with urllib.request.urlopen(api.rstrip("/") + "/health", timeout=5) as r:
+            health = json.loads(r.read().decode() or "{}")
+        if health.get("model_loaded") and health.get("model_size"):
+            model_size = str(health["model_size"])
+    except Exception:
+        pass
+if model_size:
+    payload["model_size"] = model_size
+body = json.dumps(payload).encode()
 req = urllib.request.Request(
     api.rstrip("/") + "/generate/stream",
     data=body,
@@ -564,6 +588,22 @@ PID="$(printf "%s\n" "$PICK" | sed -n '1p')"
 NAME="$(printf "%s\n" "$PICK" | sed -n '2p')"
 [[ -n "$NAME" ]] || exit 0
 vb_log stream-speak "voice=$NAME"
+MODEL_SIZE="$(/usr/bin/python3 - "$API" <<'PY'
+import json, os, urllib.request, sys
+api = sys.argv[1]
+model_size = os.environ.get("VOICEBOX_MODEL_SIZE", "").strip()
+if not model_size:
+    try:
+        with urllib.request.urlopen(api.rstrip("/") + "/health", timeout=5) as r:
+            health = json.loads(r.read().decode() or "{}")
+        if health.get("model_loaded") and health.get("model_size"):
+            model_size = str(health["model_size"])
+    except Exception:
+        pass
+print(model_size or "default")
+PY
+)"
+vb_log stream-speak "model_size=$MODEL_SIZE"
 
 export VB_STREAM_MIN_CHARS="${VB_STREAM_MIN_CHARS:-40}"
 export VB_STREAM_MAX_CHUNK="${VB_STREAM_MAX_CHUNK:-150}"
@@ -668,6 +708,204 @@ done
 vb_log stream-speak "done"
 '''
 
+_LOAD_VOICEBOX_MODEL_BODY = r'''
+API="$(vb_ensure)"
+set +e
+OUT="$(/usr/bin/python3 - "$API" <<'PY'
+from __future__ import annotations
+
+import json, os, subprocess, sys, tempfile, urllib.error, urllib.parse, urllib.request
+
+api = sys.argv[1]
+UNLOAD_LABEL = "Unload model"
+
+
+def fail(msg: str) -> None:
+    print(msg, file=sys.stderr)
+    sys.exit(2)
+
+
+def fetch_models():
+    with urllib.request.urlopen(api.rstrip("/") + "/models/status", timeout=15) as r:
+        return json.loads(r.read().decode())["models"]
+
+
+def model_size_for(model_name: str):
+    upper = model_name.upper()
+    for size in ("0.6B", "1.7B", "3B", "1B"):
+        if size in upper:
+            return size
+    return None
+
+
+def post_json(url: str, payload: dict | None, timeout: int):
+    data = None if payload is None else json.dumps(payload).encode()
+    headers = {"Content-Type": "application/json"} if payload is not None else {}
+    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read().decode() or "{}")
+
+
+def load_model(model_name: str):
+    base = api.rstrip("/")
+    size = model_size_for(model_name)
+
+    def load_by_size(model_size: str):
+        req = urllib.request.Request(
+            f"{base}/models/load?model_size={urllib.parse.quote(model_size, safe='')}",
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=300) as r:
+            return json.loads(r.read().decode() or "{}")
+
+    try:
+        result = post_json(base + "/models/load", {"model_name": model_name}, 300)
+        msg = str(result.get("message", ""))
+        if "loaded successfully" in msg.lower():
+            if size and size not in msg:
+                return load_by_size(size)
+            if not size and model_name.lower() not in msg.lower():
+                fail(
+                    "This Voicebox build does not support loading that model via the API. "
+                    "Update Voicebox or load it from the app."
+                )
+        return result
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", "replace")[:300]
+        if not size:
+            fail(detail or f"Load failed (HTTP {e.code}).")
+        try:
+            return load_by_size(size)
+        except urllib.error.HTTPError as e2:
+            fail(e2.read().decode("utf-8", "replace")[:300] or f"Load failed (HTTP {e2.code}).")
+
+
+def unload_models(loaded_names: list[str]):
+    base = api.rstrip("/")
+    errors: list[str] = []
+    if loaded_names:
+        for name in loaded_names:
+            try:
+                post_json(f"{base}/models/{urllib.parse.quote(name, safe='')}/unload", None, 60)
+            except urllib.error.HTTPError as e:
+                errors.append(e.read().decode("utf-8", "replace")[:120])
+    else:
+        try:
+            post_json(base + "/models/unload", None, 60)
+        except urllib.error.HTTPError as e:
+            errors.append(e.read().decode("utf-8", "replace")[:120])
+    if errors and len(errors) == len(loaded_names or [""]):
+        fail(errors[0])
+
+
+def choose_from_list(items: list[str], prompt: str, default: str) -> str:
+    if not items:
+        fail("No Voicebox models are available.")
+    if default not in items:
+        default = items[0]
+    quoted = ", ".join(json.dumps(item) for item in items)
+    script = (
+        "tell application \"Finder\"\n"
+        "  activate\n"
+        f"  set theItems to {{{quoted}}}\n"
+        f"  set theChoice to choose from list theItems with title \"Voicebox\" with prompt {json.dumps(prompt)} "
+        f"default items {{{json.dumps(default)}}} OK button name \"Run\" cancel button name \"Cancel\"\n"
+        "  if theChoice is false then\n"
+        "    return \"CANCEL\"\n"
+        "  end if\n"
+        "  return item 1 of theChoice\n"
+        "end tell\n"
+    )
+    path = tempfile.mkstemp(suffix=".applescript")[1]
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(script)
+    try:
+        out = subprocess.check_output(["osascript", path], text=True).strip()
+    finally:
+        os.unlink(path)
+    if out in ("", "CANCEL", "false"):
+        sys.exit(0)
+    return out
+
+
+try:
+    models = fetch_models()
+except Exception as e:
+    fail(f"Could not list Voicebox models: {e}")
+
+downloaded = [m for m in models if m.get("downloaded")]
+if not downloaded:
+    fail("No Voicebox models are downloaded yet. Download a model in Voicebox first.")
+
+labels: list[str] = []
+label_to_name: dict[str, str] = {}
+loaded_names = [m["model_name"] for m in downloaded if m.get("loaded")]
+for model in downloaded:
+    label = model["display_name"]
+    if model.get("loaded"):
+        label += " (loaded)"
+    labels.append(label)
+    label_to_name[label] = model["model_name"]
+
+labels.append(UNLOAD_LABEL)
+default = next(
+  (label for label in labels if label_to_name.get(label) in loaded_names),
+  labels[0],
+)
+choice = choose_from_list(labels, "Choose a Voicebox model to load or unload", default)
+
+if choice == UNLOAD_LABEL:
+    if loaded_names:
+        if len(loaded_names) == 1:
+            unload_models(loaded_names)
+            print(f"UNLOAD:{loaded_names[0]}")
+        else:
+            unload_labels = [next(m["display_name"] for m in downloaded if m["model_name"] == n) for n in loaded_names]
+            unload_labels.append("Unload all loaded models")
+            picked = choose_from_list(
+                unload_labels,
+                "Choose a model to unload",
+                unload_labels[0],
+            )
+            if picked == "Unload all loaded models":
+                unload_models(loaded_names)
+                print("UNLOAD:all")
+            else:
+                name = next(m["model_name"] for m in downloaded if m["display_name"] == picked)
+                unload_models([name])
+                print(f"UNLOAD:{name}")
+    else:
+        unload_models([])
+        print("UNLOAD:default")
+else:
+    model_name = label_to_name[choice]
+    result = load_model(model_name)
+    print(f"LOAD:{model_name}|{choice}")
+PY
+)"
+rc=$?
+set -e
+if [[ $rc -eq 2 ]]; then
+  vb_fail "${OUT:-Could not load or unload a Voicebox model.}"
+fi
+if [[ $rc -ne 0 || -z "$OUT" ]]; then
+  vb_log load-voicebox-model "picker cancelled"
+  exit 0
+fi
+if [[ "$OUT" == UNLOAD:* ]]; then
+  vb_log load-voicebox-model "unload ${OUT#UNLOAD:}"
+  vb_ok "Unload requested."
+else
+  NAME="${OUT#LOAD:}"
+  NAME="${NAME%%|*}"
+  DISPLAY="${OUT#*|}"
+  vb_log load-voicebox-model "load $NAME"
+  vb_ok "Load requested for ${DISPLAY%% (loaded)}."
+fi
+'''
+
+SCRIPTS["load-voicebox-model"] = PRELUDE + _LOAD_VOICEBOX_MODEL_BODY
+
 SCRIPTS["stream-speak"] = PRELUDE + _STREAM_SPEAK_BODY
 
 SCRIPTS["generate-wav-from-text"] = PRELUDE + r'''
@@ -757,53 +995,6 @@ vb_log export-voice "wrote $OUT"
 vb_ok "Saved ${SAFE}.voicebox.zip to Downloads."
 '''
 
-SCRIPTS["load-unload-qwen"] = PRELUDE + r"""
-API="$(vb_ensure)"
-set +e
-CHOICE="$(python3 - "$LAST_VB" <<'PY'
-import json, subprocess, sys, tempfile
-from pathlib import Path
-items = ["Load Qwen 1.7B", "Unload model"]
-quoted = ", ".join(json.dumps(n) for n in items)
-script = f'''
-tell application "Finder"
-  activate
-  set theItems to {{{quoted}}}
-  set theChoice to choose from list theItems with title "Voicebox" with prompt "Voicebox model" default items {{"Load Qwen 1.7B"}} OK button name "Run" cancel button name "Cancel"
-  if theChoice is false then
-    return "CANCEL"
-  end if
-  return item 1 of theChoice
-end tell
-'''
-p = Path(tempfile.mkstemp(suffix=".applescript")[1])
-p.write_text(script)
-try:
-    out = subprocess.check_output(["osascript", str(p)], text=True).strip()
-finally:
-    p.unlink(missing_ok=True)
-print(out)
-PY
-)"
-rc=$?
-set -e
-if [[ $rc -ne 0 || "$CHOICE" == "CANCEL" || -z "$CHOICE" ]]; then
-  vb_log load-unload-qwen "picker cancelled"
-  exit 0
-fi
-if [[ "$CHOICE" == "Load Qwen 1.7B" ]]; then
-  curl -sf --max-time 300 -X POST "${API}/models/load?model_size=1.7B" >/dev/null \
-    || vb_fail "Load failed (the model may still be downloading)."
-  vb_log load-unload-qwen "load requested"
-  vb_ok "Load requested for Qwen 1.7B."
-else
-  curl -sf --max-time 60 -X POST "${API}/models/unload" >/dev/null \
-    || vb_fail "Unload failed."
-  vb_log load-unload-qwen "unload requested"
-  vb_ok "Unload requested."
-fi
-"""
-
 PACKAGES = [
     {
         "slug": "generate-wav-from-text",
@@ -850,21 +1041,21 @@ PACKAGES = [
         "how": "Run **Export Voice** from Services / MenuCue, pick a profile. The zip lands in `~/Downloads`.",
     },
     {
-        "slug": "load-unload-qwen",
-        "name": "Load or Unload Qwen",
-        "summary": "Loads Qwen 1.7B into memory or unloads the TTS model.",
-        "readme": "Loads the TTS model into memory so generation is ready, or unloads it to free RAM. Does not generate or transcribe anything by itself.",
+        "slug": "load-voicebox-model",
+        "name": "Load Voicebox Model",
+        "summary": "Loads or unloads a downloaded Voicebox TTS model from a menu.",
+        "readme": "Lists downloaded models from `GET /models/status`, lets you pick one to load into memory, or unload the active model(s). Uses `POST /models/load` (with legacy `model_size` fallback) and per-model unload.",
         "tags": ["voicebox", "models"],
         "receives": [],
         "kind": "none",
         "file_types": [],
-        "how": "Run **Load or Unload Qwen** from Services and choose Load or Unload.",
+        "how": "Run **Load Voicebox Model** from Services, pick a downloaded model to load, or choose **Unload model** to free RAM.",
     },
     {
         "slug": "stream-speak",
         "name": "Stream Speak",
         "summary": "Streams selected text as WAV from Voicebox with chunked synthesis and gapless local playback.",
-        "readme": "Uses Voicebox `POST /generate/stream` one chunk at a time. Splits on sentence boundaries into ~150-character chunks for fast first audio. While each chunk plays locally via ffplay, the next chunk synthesizes in the background (Voicebox handles one stream at a time). Supports up to 20,000 characters.",
+        "readme": "Uses Voicebox `POST /generate/stream` one chunk at a time. Splits on sentence boundaries into ~150-character chunks for fast first audio. While each chunk plays locally via ffplay, the next chunk synthesizes in the background (Voicebox handles one stream at a time). Supports up to 20,000 characters. Passes the currently loaded `model_size` from `/health` (or `VOICEBOX_MODEL_SIZE`) so generation does not force the 1.7B default.",
         "tags": ["text", "voicebox", "speak"],
         "receives": ["text"],
         "kind": "text",

@@ -1,9 +1,17 @@
 # Changelog
 
+## 1.0.2 (2026-08-27)
+
+- Replace **Load or Unload Qwen** and **Load or Unload Qwen 0.6B** with a single **Load Voicebox Model** quick action.
+- The new action lists downloaded models from `GET /models/status` in an OSA menu, loads the selected model, and supports unload (including multiple loaded models).
+- Fix embedded Python using 3.10-only type syntax that crashed silently under `/usr/bin/python3` (3.9) before the menu appeared.
+- Stream Speak and Generate WAV from Text now pass the loaded `model_size` from `/health` (override with `VOICEBOX_MODEL_SIZE`) so `/generate` does not swap 0.6B for the 1.7B default.
+
 ## 1.0.1 (2026-08-27)
 
 - Remove Speak Selection; Stream Speak is the text-to-speech Services action.
 - Stream Speak: chunked synthesis with pipelined playback (one Voicebox stream at a time, ffplay per chunk).
+- Add **Load or Unload Qwen 0.6B** quick action (`POST /models/load?model_size=0.6B`).
 - GitHub Pages catalog deploy for MenuCue installs.
 
 ## Quick Action hardening (Speak Selection lessons)
@@ -27,6 +35,6 @@ Generate WAV from Text uses `POST /generate`, polls `GET /history/{id}` until `c
 
 ### Library actions (Voicebox `:17493`)
 
-Transcribe, import zip, export, load/unload Qwen still talk to Voicebox. Profile lists use Finder-front `choose from list`.
+Transcribe, import zip, export, and load/unload models still talk to Voicebox. Profile and model lists use Finder-front `choose from list`.
 
 Do not poll `GET /generate/{id}/status` as one-shot JSON.
