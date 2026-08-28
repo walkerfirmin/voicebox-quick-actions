@@ -1,7 +1,7 @@
 {
   "id": "com.voicebox.quickaction.generate-wav-from-text",
   "name": "Generate WAV from Text",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "author": "Voicebox",
   "readme": "README.md",
   "workflow": "Generate WAV from Text.workflow",

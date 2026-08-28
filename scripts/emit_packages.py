@@ -9,6 +9,7 @@ from pathlib import Path
 from xml.sax.saxutils import escape as xml_escape
 
 ROOT = Path("/Users/admin/git/voicebox-quick-actions")
+PACKAGE_VERSION = "1.0.1"
 
 PRELUDE = r"""
 set -euo pipefail
@@ -922,9 +923,9 @@ def info_plist(pkg: dict) -> str:
 	<key>CFBundleIdentifier</key>
 	<string>{bid}</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.0.0</string>
+	<string>{PACKAGE_VERSION}</string>
 	<key>CFBundleVersion</key>
-	<string>1</string>
+	<string>2</string>
 	<key>CFBundlePackageType</key>
 	<string>WFLO</string>
 	<key>NSServices</key>
@@ -1321,7 +1322,7 @@ def main() -> None:
     index = {
         "schemaVersion": 1,
         "name": "Voicebox Quick Actions",
-        "updatedAt": "2026-08-22",
+        "updatedAt": "2026-08-27",
         "packages": [],
     }
     for pkg in PACKAGES:
@@ -1335,7 +1336,7 @@ def main() -> None:
         package = {
             "id": f"com.voicebox.quickaction.{slug}",
             "name": pkg["name"],
-            "version": "1.0.0",
+            "version": PACKAGE_VERSION,
             "author": "Voicebox",
             "readme": "README.md",
             "workflow": wf_name,
@@ -1355,7 +1356,7 @@ def main() -> None:
                 "id": package["id"],
                 "name": pkg["name"],
                 "summary": pkg["summary"],
-                "version": "1.0.0",
+                "version": PACKAGE_VERSION,
                 "tags": pkg["tags"],
                 "path": f"packages/{slug}",
             }

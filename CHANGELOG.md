@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.1 (2026-08-27)
+
+- Remove Speak Selection; Stream Speak is the text-to-speech Services action.
+- Stream Speak: chunked synthesis with pipelined playback (one Voicebox stream at a time, ffplay per chunk).
+- GitHub Pages catalog deploy for MenuCue installs.
+
 ## Quick Action hardening (Speak Selection lessons)
 
 All Automator Services now share the same shell prelude so they behave when run from the Services menu in the background.
