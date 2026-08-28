@@ -15,7 +15,9 @@ All Automator Services now share the same shell prelude so they behave when run 
 
 ### Speech (Voicebox only)
 
-Speak Selection and Stream Speak use `POST /generate`, export audio, and play once locally with `afplay`/`ffplay`. They do not call `POST /speak` (Voicebox already plays that path, which caused double audio).
+Speak Selection uses `POST /generate`, polls History, exports audio, and plays once locally (generation is saved in Voicebox).
+
+Stream Speak uses `POST /generate/stream`, saves each WAV under `/tmp/vb-stream-speak/`, then plays locally — matching how a remote client would fetch streamed audio and play it on its own system.
 
 Generate WAV from Text uses `POST /generate`, polls `GET /history/{id}` until `completed`, then `GET /history/{id}/export-audio` to save `<stem>.wav`.
 

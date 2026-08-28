@@ -609,6 +609,49 @@ PY
   return 0
 }
 
+vb_voicebox_stream() {
+  local api="$1" profile_id="$2" text="$3" out="$4"
+  local rc err
+  mkdir -p "$(dirname "$out")"
+  set +e
+  err="$(/usr/bin/python3 - "$api" "$profile_id" "$text" "$out" &lt;&lt;'PY'
+import json, sys, urllib.error, urllib.request
+from pathlib import Path
+
+api, profile_id, text, out = sys.argv[1:5]
+body = json.dumps({"profile_id": profile_id, "text": text}).encode()
+req = urllib.request.Request(
+    api.rstrip("/") + "/generate/stream",
+    data=body,
+    headers={"Content-Type": "application/json"},
+    method="POST",
+)
+try:
+    with urllib.request.urlopen(req, timeout=120) as r:
+        data = r.read()
+except urllib.error.HTTPError as e:
+    print(e.read().decode("utf-8", "replace")[:500], file=sys.stderr)
+    sys.exit(4)
+except urllib.error.URLError as e:
+    print(str(e.reason)[:500], file=sys.stderr)
+    sys.exit(4)
+if not data:
+    print("empty stream response", file=sys.stderr)
+    sys.exit(4)
+Path(out).write_bytes(data)
+print(out)
+PY
+)"
+  rc=$?
+  set -e
+  if [[ $rc -ne 0 ]]; then
+    [[ -n "$err" ]] &amp;&amp; vb_log "${VB_QA_SLUG:-voicebox}" "voicebox stream error: ${err:0:200}"
+    return "$rc"
+  fi
+  [[ -s "$out" ]] || return 1
+  return 0
+}
+
 vb_play() {
   local f="$1"
   if command -v ffplay &gt;/dev/null; then

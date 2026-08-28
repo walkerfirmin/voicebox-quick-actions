@@ -439,6 +439,49 @@ PY
   return 0
 }
 
+vb_voicebox_stream() {
+  local api="$1" profile_id="$2" text="$3" out="$4"
+  local rc err
+  mkdir -p "$(dirname "$out")"
+  set +e
+  err="$(/usr/bin/python3 - "$api" "$profile_id" "$text" "$out" <<'PY'
+import json, sys, urllib.error, urllib.request
+from pathlib import Path
+
+api, profile_id, text, out = sys.argv[1:5]
+body = json.dumps({"profile_id": profile_id, "text": text}).encode()
+req = urllib.request.Request(
+    api.rstrip("/") + "/generate/stream",
+    data=body,
+    headers={"Content-Type": "application/json"},
+    method="POST",
+)
+try:
+    with urllib.request.urlopen(req, timeout=120) as r:
+        data = r.read()
+except urllib.error.HTTPError as e:
+    print(e.read().decode("utf-8", "replace")[:500], file=sys.stderr)
+    sys.exit(4)
+except urllib.error.URLError as e:
+    print(str(e.reason)[:500], file=sys.stderr)
+    sys.exit(4)
+if not data:
+    print("empty stream response", file=sys.stderr)
+    sys.exit(4)
+Path(out).write_bytes(data)
+print(out)
+PY
+)"
+  rc=$?
+  set -e
+  if [[ $rc -ne 0 ]]; then
+    [[ -n "$err" ]] && vb_log "${VB_QA_SLUG:-voicebox}" "voicebox stream error: ${err:0:200}"
+    return "$rc"
+  fi
+  [[ -s "$out" ]] || return 1
+  return 0
+}
+
 vb_play() {
   local f="$1"
   if command -v ffplay >/dev/null; then
@@ -514,8 +557,38 @@ vb_ok "Speaking with ${NAME}"
 vb_play "$OUT"
 '''
 
+_STREAM_SPEAK_BODY = r'''
+TEXT="$(vb_read_text "$@")"
+vb_log stream-speak "text_len=${#TEXT}"
+if [[ -z "${TEXT//[$' \t\n\r']/}" ]]; then
+  vb_fail "No text selected. Highlight text, then run this from the Services menu."
+fi
+if (( ${#TEXT} > 500 )); then
+  TEXT="${TEXT:0:500}"
+fi
+API="$(vb_ensure)"
+PICK="$(vb_choose_profile "$API")"
+PID="$(printf "%s\n" "$PICK" | sed -n '1p')"
+NAME="$(printf "%s\n" "$PICK" | sed -n '2p')"
+[[ -n "$NAME" ]] || exit 0
+vb_log stream-speak "voice=$NAME"
+STREAM_DIR="/tmp/vb-stream-speak"
+mkdir -p "$STREAM_DIR"
+OUT="${STREAM_DIR}/$(date +%Y%m%d-%H%M%S)-$$.wav"
+set +e
+vb_voicebox_stream "$API" "$PID" "$TEXT" "$OUT"
+rc=$?
+set -e
+if [[ $rc -ne 0 || ! -s "$OUT" ]]; then
+  vb_fail "Could not stream speech with ${NAME}. Is Voicebox running?"
+fi
+vb_log stream-speak "saved $OUT"
+vb_ok "Streaming with ${NAME}"
+vb_play "$OUT"
+'''
+
 SCRIPTS["speak-selection"] = PRELUDE + _SPEAK_BODY.replace("SPEAK_SLUG", "speak-selection")
-SCRIPTS["stream-speak"] = PRELUDE + _SPEAK_BODY.replace("SPEAK_SLUG", "stream-speak")
+SCRIPTS["stream-speak"] = PRELUDE + _STREAM_SPEAK_BODY
 
 SCRIPTS["generate-wav-from-text"] = PRELUDE + r'''
 (( $# > 0 )) || vb_fail "Select a text file in Finder."
@@ -656,7 +729,7 @@ PACKAGES = [
         "slug": "speak-selection",
         "name": "Speak Selection",
         "summary": "Speaks selected text with a Voicebox profile on your speakers.",
-        "readme": "Reads highlighted text aloud using a Voicebox cloned profile via `POST /generate`, then plays the exported audio once locally.",
+        "readme": "Reads highlighted text aloud via Voicebox `POST /generate`: polls History, exports audio, and plays once locally. Saves a generation entry in Voicebox.",
         "tags": ["text", "voicebox", "speak"],
         "receives": ["text"],
         "kind": "text",
@@ -721,13 +794,13 @@ PACKAGES = [
     {
         "slug": "stream-speak",
         "name": "Stream Speak",
-        "summary": "Speaks selected text with a Voicebox profile (same path as Speak Selection).",
-        "readme": "Same as Speak Selection: Voicebox profile picker, `POST /generate`, and one local playback.",
+        "summary": "Streams selected text as WAV from Voicebox and plays it from a temp file.",
+        "readme": "Uses Voicebox `POST /generate/stream` to receive WAV audio directly (no History export step), saves each clip under `/tmp/vb-stream-speak/`, then plays it locally — the same pattern a remote client would use to fetch and play on its own machine.",
         "tags": ["text", "voicebox", "speak"],
         "receives": ["text"],
         "kind": "text",
         "file_types": [],
-        "how": "Select text → Services → **Stream Speak** → pick a Voicebox profile.",
+        "how": "Select text → Services → **Stream Speak** → pick a Voicebox profile. WAV is saved in `/tmp/vb-stream-speak/` then played.",
     },
 ]
 

@@ -76,7 +76,7 @@
     {
       "id": "com.voicebox.quickaction.stream-speak",
       "name": "Stream Speak",
-      "summary": "Speaks selected text with a Voicebox profile (same path as Speak Selection).",
+      "summary": "Streams selected text as WAV from Voicebox and plays it from a temp file.",
       "version": "1.0.0",
       "tags": [
         "text",
