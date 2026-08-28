@@ -1,6 +1,6 @@
 # Stream Speak
 
-Same as Speak Selection: Voicebox profile picker and `POST /speak` playback.
+Same as Speak Selection: Voicebox profile picker, `POST /generate`, and one local playback.
 
 ## Dependencies
 

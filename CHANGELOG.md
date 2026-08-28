@@ -15,12 +15,12 @@ All Automator Services now share the same shell prelude so they behave when run 
 
 ### Speech (Voicebox only)
 
-Speak Selection and Stream Speak call `POST /speak` and let Voicebox play the audio (no local playback).
+Speak Selection and Stream Speak use `POST /generate`, export audio, and play once locally with `afplay`/`ffplay`. They do not call `POST /speak` (Voicebox already plays that path, which caused double audio).
 
 Generate WAV from Text uses `POST /generate`, polls `GET /history/{id}` until `completed`, then `GET /history/{id}/export-audio` to save `<stem>.wav`.
 
 ### Library actions (Voicebox `:17493`)
 
-Transcribe, import zip/audio, export, load/unload Qwen, and clear cache still talk to Voicebox. Profile lists use Finder-front `choose from list`.
+Transcribe, import zip, export, load/unload Qwen still talk to Voicebox. Profile lists use Finder-front `choose from list`.
 
 Do not poll `GET /generate/{id}/status` as one-shot JSON.

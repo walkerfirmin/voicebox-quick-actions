@@ -295,60 +295,6 @@ emit(out)
 PY
 }
 
-vb_finder_dialog() {
-  python3 - "$1" "$2" <<'PY'
-import json, subprocess, sys, tempfile
-from pathlib import Path
-title, prompt = sys.argv[1], sys.argv[2]
-script = f'''
-tell application "Finder"
-  activate
-  try
-    set theResult to display dialog {json.dumps(prompt)} default answer "" with title {json.dumps(title)} buttons {{"Cancel", "OK"}} default button "OK" cancel button "Cancel"
-    return text returned of theResult
-  on error
-    return "CANCEL"
-  end try
-end tell
-'''
-p = Path(tempfile.mkstemp(suffix=".applescript")[1])
-p.write_text(script)
-try:
-    out = subprocess.check_output(["osascript", str(p)], text=True).strip()
-finally:
-    p.unlink(missing_ok=True)
-if out in ("", "CANCEL"):
-    sys.exit(0)
-print(out)
-PY
-}
-
-vb_finder_confirm() {
-  python3 - "$1" "$2" <<'PY'
-import json, subprocess, sys, tempfile
-from pathlib import Path
-title, prompt = sys.argv[1], sys.argv[2]
-script = f'''
-tell application "Finder"
-  activate
-  try
-    display dialog {json.dumps(prompt)} with title {json.dumps(title)} buttons {{"Cancel", "OK"}} default button "Cancel" cancel button "Cancel"
-    return "OK"
-  on error
-    return "CANCEL"
-  end try
-end tell
-'''
-p = Path(tempfile.mkstemp(suffix=".applescript")[1])
-p.write_text(script)
-try:
-    out = subprocess.check_output(["osascript", str(p)], text=True).strip()
-finally:
-    p.unlink(missing_ok=True)
-print(out)
-PY
-}
-
 vb_voicebox_wait() {
   local api="$1" gen_id="$2"
   /usr/bin/python3 - "$api" "$gen_id" <<'PY'
@@ -493,6 +439,15 @@ PY
   return 0
 }
 
+vb_play() {
+  local f="$1"
+  if command -v ffplay >/dev/null; then
+    ffplay -nodisp -autoexit -loglevel error "$f"
+  else
+    afplay "$f"
+  fi
+}
+
 vb_transcribe_file() {
   local api="$1" f="$2"
   local cmd resp rc
@@ -542,18 +497,21 @@ if (( ${#TEXT} > 500 )); then
 fi
 API="$(vb_ensure)"
 PICK="$(vb_choose_profile "$API")"
+PID="$(printf "%s\n" "$PICK" | sed -n '1p')"
 NAME="$(printf "%s\n" "$PICK" | sed -n '2p')"
 [[ -n "$NAME" ]] || exit 0
 vb_log SPEAK_SLUG "voice=$NAME"
+OUT="/tmp/vb-SPEAK_SLUG.wav"
 set +e
-vb_voicebox_speak "$API" "$NAME" "$TEXT"
+vb_voicebox_generate "$API" "$PID" "$TEXT" "$OUT"
 rc=$?
 set -e
-if [[ $rc -ne 0 ]]; then
+if [[ $rc -ne 0 || ! -s "$OUT" ]]; then
   vb_fail "Could not speak with ${NAME}. Is Voicebox running?"
 fi
-vb_log SPEAK_SLUG "spoken via voicebox"
+vb_log SPEAK_SLUG "played $OUT"
 vb_ok "Speaking with ${NAME}"
+vb_play "$OUT"
 '''
 
 SCRIPTS["speak-selection"] = PRELUDE + _SPEAK_BODY.replace("SPEAK_SLUG", "speak-selection")
@@ -633,19 +591,6 @@ for f in "$@"; do
 done
 '''
 
-SCRIPTS["import-audio-into-voicebox"] = PRELUDE + r'''
-API="$(vb_ensure)"
-(( $# > 0 )) || vb_fail "Select an audio file in Finder."
-for f in "$@"; do
-  f="$(vb_normalize_path "$f")"
-  [[ -f "$f" ]] || continue
-  curl -sf --max-time 60 -X POST "${API}/generate/import" -F "file=@${f}" >/dev/null \
-    || vb_fail "Import failed for $f"
-  vb_log import-audio-into-voicebox "imported $f"
-  vb_ok "Imported $(basename "$f") into History."
-done
-'''
-
 SCRIPTS["export-voice"] = PRELUDE + r'''
 API="$(vb_ensure)"
 PICK="$(vb_choose_profile "$API")"
@@ -706,28 +651,12 @@ else
 fi
 """
 
-SCRIPTS["clear-cache"] = PRELUDE + r'''
-API="$(vb_ensure)"
-set +e
-CONF="$(vb_finder_confirm "Voicebox" "Clear Voicebox generation cache? Profiles are not deleted.")"
-rc=$?
-set -e
-if [[ $rc -ne 0 || "$CONF" != "OK" ]]; then
-  vb_log clear-cache "confirm cancelled"
-  exit 0
-fi
-curl -sf --max-time 60 -X POST "${API}/cache/clear" >/dev/null \
-  || vb_fail "Clear cache failed."
-vb_log clear-cache "cleared"
-vb_ok "Cache cleared."
-'''
-
 PACKAGES = [
     {
         "slug": "speak-selection",
         "name": "Speak Selection",
         "summary": "Speaks selected text with a Voicebox profile on your speakers.",
-        "readme": "Reads highlighted text aloud using a Voicebox cloned profile via `POST /speak`. Voicebox handles playback.",
+        "readme": "Reads highlighted text aloud using a Voicebox cloned profile via `POST /generate`, then plays the exported audio once locally.",
         "tags": ["text", "voicebox", "speak"],
         "receives": ["text"],
         "kind": "text",
@@ -768,17 +697,6 @@ PACKAGES = [
         "how": "Select a `.zip` / `.voicebox.zip` → Quick Actions → **Import Voice ZIP**.",
     },
     {
-        "slug": "import-audio-into-voicebox",
-        "name": "Import Audio into Voicebox",
-        "summary": "Uploads a local recording into Voicebox History.",
-        "readme": "Uploads a local recording into Voicebox History so it shows up in the app without using the in-app file picker.",
-        "tags": ["finder", "voicebox", "history"],
-        "receives": ["files"],
-        "kind": "finder",
-        "file_types": ["public.audio"],
-        "how": "Select audio → Quick Actions → **Import Audio into Voicebox**.",
-    },
-    {
         "slug": "export-voice",
         "name": "Export Voice",
         "summary": "Exports a chosen voice profile zip to Downloads.",
@@ -801,21 +719,10 @@ PACKAGES = [
         "how": "Run **Load or Unload Qwen** from Services and choose Load or Unload.",
     },
     {
-        "slug": "clear-cache",
-        "name": "Clear Voicebox Cache",
-        "summary": "Clears Voicebox generation cache after a confirm dialog.",
-        "readme": "Deletes Voicebox’s local generation cache to reclaim disk. Does not delete voice profiles.",
-        "tags": ["voicebox", "maintenance"],
-        "receives": [],
-        "kind": "none",
-        "file_types": [],
-        "how": "Run **Clear Voicebox Cache** from Services and confirm.",
-    },
-    {
         "slug": "stream-speak",
         "name": "Stream Speak",
         "summary": "Speaks selected text with a Voicebox profile (same path as Speak Selection).",
-        "readme": "Same as Speak Selection: Voicebox profile picker and `POST /speak` playback.",
+        "readme": "Same as Speak Selection: Voicebox profile picker, `POST /generate`, and one local playback.",
         "tags": ["text", "voicebox", "speak"],
         "receives": ["text"],
         "kind": "text",
@@ -941,6 +848,8 @@ def workflow_meta(pkg: dict) -> str:
 		<string>com.apple.Automator.nothing</string>
 		<key>serviceOutputTypeIdentifier</key>
 		<string>com.apple.Automator.nothing</string>
+		<key>serviceProcessesInput</key>
+		<false/>
 		<key>systemImageName</key>
 		<string>NSActionTemplate</string>
 		<key>workflowTypeIdentifier</key>

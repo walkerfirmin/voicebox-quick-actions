@@ -1,6 +1,6 @@
 # Speak Selection
 
-Reads highlighted text aloud using a Voicebox cloned profile via `POST /speak`. Voicebox handles playback.
+Reads highlighted text aloud using a Voicebox cloned profile via `POST /generate`, then plays the exported audio once locally.
 
 ## Dependencies
 

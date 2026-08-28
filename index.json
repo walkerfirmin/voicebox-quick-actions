@@ -52,18 +52,6 @@
       "path": "packages/import-voice-zip"
     },
     {
-      "id": "com.voicebox.quickaction.import-audio-into-voicebox",
-      "name": "Import Audio into Voicebox",
-      "summary": "Uploads a local recording into Voicebox History.",
-      "version": "1.0.0",
-      "tags": [
-        "finder",
-        "voicebox",
-        "history"
-      ],
-      "path": "packages/import-audio-into-voicebox"
-    },
-    {
       "id": "com.voicebox.quickaction.export-voice",
       "name": "Export Voice",
       "summary": "Exports a chosen voice profile zip to Downloads.",
@@ -84,17 +72,6 @@
         "models"
       ],
       "path": "packages/load-unload-qwen"
-    },
-    {
-      "id": "com.voicebox.quickaction.clear-cache",
-      "name": "Clear Voicebox Cache",
-      "summary": "Clears Voicebox generation cache after a confirm dialog.",
-      "version": "1.0.0",
-      "tags": [
-        "voicebox",
-        "maintenance"
-      ],
-      "path": "packages/clear-cache"
     },
     {
       "id": "com.voicebox.quickaction.stream-speak",

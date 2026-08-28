@@ -344,60 +344,6 @@ emit(out)
 PY
 }
 
-vb_finder_dialog() {
-  python3 - "$1" "$2" &lt;&lt;'PY'
-import json, subprocess, sys, tempfile
-from pathlib import Path
-title, prompt = sys.argv[1], sys.argv[2]
-script = f'''
-tell application "Finder"
-  activate
-  try
-    set theResult to display dialog {json.dumps(prompt)} default answer "" with title {json.dumps(title)} buttons {{"Cancel", "OK"}} default button "OK" cancel button "Cancel"
-    return text returned of theResult
-  on error
-    return "CANCEL"
-  end try
-end tell
-'''
-p = Path(tempfile.mkstemp(suffix=".applescript")[1])
-p.write_text(script)
-try:
-    out = subprocess.check_output(["osascript", str(p)], text=True).strip()
-finally:
-    p.unlink(missing_ok=True)
-if out in ("", "CANCEL"):
-    sys.exit(0)
-print(out)
-PY
-}
-
-vb_finder_confirm() {
-  python3 - "$1" "$2" &lt;&lt;'PY'
-import json, subprocess, sys, tempfile
-from pathlib import Path
-title, prompt = sys.argv[1], sys.argv[2]
-script = f'''
-tell application "Finder"
-  activate
-  try
-    display dialog {json.dumps(prompt)} with title {json.dumps(title)} buttons {{"Cancel", "OK"}} default button "Cancel" cancel button "Cancel"
-    return "OK"
-  on error
-    return "CANCEL"
-  end try
-end tell
-'''
-p = Path(tempfile.mkstemp(suffix=".applescript")[1])
-p.write_text(script)
-try:
-    out = subprocess.check_output(["osascript", str(p)], text=True).strip()
-finally:
-    p.unlink(missing_ok=True)
-print(out)
-PY
-}
-
 vb_voicebox_wait() {
   local api="$1" gen_id="$2"
   /usr/bin/python3 - "$api" "$gen_id" &lt;&lt;'PY'
@@ -542,6 +488,15 @@ PY
   return 0
 }
 
+vb_play() {
+  local f="$1"
+  if command -v ffplay &gt;/dev/null; then
+    ffplay -nodisp -autoexit -loglevel error "$f"
+  else
+    afplay "$f"
+  fi
+}
+
 vb_transcribe_file() {
   local api="$1" f="$2"
   local cmd resp rc
@@ -587,18 +542,21 @@ if (( ${#TEXT} &gt; 500 )); then
 fi
 API="$(vb_ensure)"
 PICK="$(vb_choose_profile "$API")"
+PID="$(printf "%s\n" "$PICK" | sed -n '1p')"
 NAME="$(printf "%s\n" "$PICK" | sed -n '2p')"
 [[ -n "$NAME" ]] || exit 0
 vb_log speak-selection "voice=$NAME"
+OUT="/tmp/vb-speak-selection.wav"
 set +e
-vb_voicebox_speak "$API" "$NAME" "$TEXT"
+vb_voicebox_generate "$API" "$PID" "$TEXT" "$OUT"
 rc=$?
 set -e
-if [[ $rc -ne 0 ]]; then
+if [[ $rc -ne 0 || ! -s "$OUT" ]]; then
   vb_fail "Could not speak with ${NAME}. Is Voicebox running?"
 fi
-vb_log speak-selection "spoken via voicebox"
+vb_log speak-selection "played $OUT"
 vb_ok "Speaking with ${NAME}"
+vb_play "$OUT"
 </string>
 					<key>CheckedForUserDefaultShell</key>
 					<true/>
