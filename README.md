@@ -39,6 +39,6 @@ Only HTTPS indexes are accepted.
 
 ## Packages
 
-**Build first:** Speak Selection, Generate WAV from Text, Transcribe Audio, New Cloned Voice, Import Voice ZIP, Add Sample to Voice, Import Audio into Voicebox, Set Profile Avatar.
+**Build first:** Speak Selection, Generate WAV from Text, Transcribe Audio, Import Voice ZIP, Import Audio into Voicebox.
 
 **Nice later:** Export Voice, Load or Unload Qwen, Clear Voicebox Cache, Stream Speak.

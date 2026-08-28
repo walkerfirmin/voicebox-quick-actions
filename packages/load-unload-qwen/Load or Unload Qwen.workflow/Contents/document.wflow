@@ -542,23 +542,6 @@ PY
   return 0
 }
 
-vb_srt_text() {
-  python3 - "$1" &lt;&lt;'PY'
-import re, sys
-from pathlib import Path
-p = Path(sys.argv[1])
-if not p.exists():
-    sys.exit(0)
-lines = []
-for line in p.read_text(encoding="utf-8", errors="replace").splitlines():
-    line = line.strip()
-    if not line or re.fullmatch(r"\d+", line) or re.match(r"\d{2}:\d{2}:\d{2}[,.]\d+", line):
-        continue
-    lines.append(line)
-print(" ".join(lines))
-PY
-}
-
 vb_transcribe_file() {
   local api="$1" f="$2"
   local cmd resp rc

@@ -493,23 +493,6 @@ PY
   return 0
 }
 
-vb_srt_text() {
-  python3 - "$1" <<'PY'
-import re, sys
-from pathlib import Path
-p = Path(sys.argv[1])
-if not p.exists():
-    sys.exit(0)
-lines = []
-for line in p.read_text(encoding="utf-8", errors="replace").splitlines():
-    line = line.strip()
-    if not line or re.fullmatch(r"\d+", line) or re.match(r"\d{2}:\d{2}:\d{2}[,.]\d+", line):
-        continue
-    lines.append(line)
-print(" ".join(lines))
-PY
-}
-
 vb_transcribe_file() {
   local api="$1" f="$2"
   local cmd resp rc
@@ -637,52 +620,6 @@ done
 (( processed > 0 )) || vb_fail "Could not read the selected audio file(s)."
 '''
 
-SCRIPTS["new-cloned-voice"] = PRELUDE + r'''
-API="$(vb_ensure)"
-(( $# > 0 )) || vb_fail "Select an audio file in Finder."
-AUDIO=""
-for f in "$@"; do
-  f="$(vb_normalize_path "$f")"
-  case "${f:l}" in
-    *.wav|*.mp3|*.m4a|*.flac|*.ogg|*.aiff|*.aif) AUDIO="$f"; break ;;
-  esac
-done
-[[ -n "$AUDIO" ]] || AUDIO="$(vb_normalize_path "$1")"
-[[ -f "$AUDIO" ]] || vb_fail "Not a file: $AUDIO"
-set +e
-NAME="$(vb_finder_dialog "New Cloned Voice" "New voice name:")"
-rc=$?
-set -e
-if [[ $rc -eq 0 && -z "$NAME" ]]; then
-  vb_log new-cloned-voice "dialog cancelled"
-  exit 0
-fi
-if [[ $rc -ne 0 || -z "$NAME" ]]; then
-  vb_fail "Name required."
-fi
-DIR="$(dirname "$AUDIO")"
-BASE="$(basename "$AUDIO")"
-STEM="${BASE%.*}"
-SRT=""
-for cand in "${DIR}/${STEM}.srt" "${DIR}/${STEM%_10s}.srt"; do
-  [[ -f "$cand" ]] && SRT="$cand" && break
-done
-if [[ -n "$SRT" ]]; then
-  REF="$(vb_srt_text "$SRT")"
-else
-  REF="$(vb_transcribe_file "$API" "$AUDIO")"
-fi
-[[ -n "$REF" ]] || vb_fail "Need a transcript (matching .srt or Whisper)."
-BODY="$(python3 -c 'import json,sys; print(json.dumps({"name": sys.argv[1], "description": sys.argv[2], "language": "en", "voice_type": "cloned", "default_engine": "qwen"}))' "$NAME" "Cloned from $(basename "$AUDIO")")"
-PROF="$(curl -sf --max-time 30 -X POST "${API}/profiles" -H "Content-Type: application/json" -d "$BODY")" \
-  || vb_fail "Could not create profile (name may already exist)."
-PID="$(printf "%s" "$PROF" | python3 -c 'import json,sys; print(json.loads(sys.stdin.read())["id"])')"
-curl -sf --max-time 60 -X POST "${API}/profiles/${PID}/samples" -F "file=@${AUDIO}" -F "reference_text=${REF}" >/dev/null \
-  || vb_fail "Could not add sample."
-vb_log new-cloned-voice "created $NAME $PID"
-vb_ok "Created voice ${NAME}."
-'''
-
 SCRIPTS["import-voice-zip"] = PRELUDE + r'''
 API="$(vb_ensure)"
 (( $# > 0 )) || vb_fail "Select a Voicebox profile zip in Finder."
@@ -693,35 +630,6 @@ for f in "$@"; do
     || vb_fail "Import failed for $f"
   vb_log import-voice-zip "imported $f"
   vb_ok "Imported $(basename "$f")"
-done
-'''
-
-SCRIPTS["add-sample-to-voice"] = PRELUDE + r'''
-API="$(vb_ensure)"
-PICK="$(vb_choose_profile "$API")"
-PID="$(printf "%s\n" "$PICK" | sed -n '1p')"
-NAME="$(printf "%s\n" "$PICK" | sed -n '2p')"
-(( $# > 0 )) || vb_fail "Select an audio file in Finder."
-for AUDIO in "$@"; do
-  AUDIO="$(vb_normalize_path "$AUDIO")"
-  [[ -f "$AUDIO" ]] || continue
-  DIR="$(dirname "$AUDIO")"
-  BASE="$(basename "$AUDIO")"
-  STEM="${BASE%.*}"
-  SRT=""
-  for cand in "${DIR}/${STEM}.srt" "${DIR}/${STEM%_10s}.srt"; do
-    [[ -f "$cand" ]] && SRT="$cand" && break
-  done
-  if [[ -n "$SRT" ]]; then
-    REF="$(vb_srt_text "$SRT")"
-  else
-    REF="$(vb_transcribe_file "$API" "$AUDIO")"
-  fi
-  [[ -n "$REF" ]] || vb_fail "Need a transcript for $AUDIO"
-  curl -sf --max-time 60 -X POST "${API}/profiles/${PID}/samples" -F "file=@${AUDIO}" -F "reference_text=${REF}" >/dev/null \
-    || vb_fail "Could not add sample to ${NAME}."
-  vb_log add-sample-to-voice "sample $AUDIO -> $NAME"
-  vb_ok "Added sample to ${NAME}."
 done
 '''
 
@@ -736,20 +644,6 @@ for f in "$@"; do
   vb_log import-audio-into-voicebox "imported $f"
   vb_ok "Imported $(basename "$f") into History."
 done
-'''
-
-SCRIPTS["set-profile-avatar"] = PRELUDE + r'''
-API="$(vb_ensure)"
-PICK="$(vb_choose_profile "$API")"
-PID="$(printf "%s\n" "$PICK" | sed -n '1p')"
-NAME="$(printf "%s\n" "$PICK" | sed -n '2p')"
-(( $# > 0 )) || vb_fail "Select an image in Finder."
-IMG="$(vb_normalize_path "$1")"
-[[ -f "$IMG" ]] || vb_fail "Not a file: $IMG"
-curl -sf --max-time 30 -X POST "${API}/profiles/${PID}/avatar" -F "file=@${IMG}" >/dev/null \
-  || vb_fail "Avatar upload failed."
-vb_log set-profile-avatar "avatar $IMG -> $NAME"
-vb_ok "Updated avatar for ${NAME}."
 '''
 
 SCRIPTS["export-voice"] = PRELUDE + r'''
@@ -863,17 +757,6 @@ PACKAGES = [
         "how": "Select wav/mp3/m4a in Finder (click to select it first) → Services → **Transcribe Audio**. Voicebox must be running. Do not open this workflow in Automator — that breaks the Services menu entry.",
     },
     {
-        "slug": "new-cloned-voice",
-        "name": "New Cloned Voice",
-        "summary": "Creates a cloned Voicebox profile from selected audio and a transcript.",
-        "readme": "Creates a new Voicebox voice profile from a selected audio clip and its matching `.srt` (timestamps stripped). If no SRT exists, Whisper transcribes the clip first.",
-        "tags": ["finder", "voicebox", "clone"],
-        "receives": ["files"],
-        "kind": "finder",
-        "file_types": ["public.audio"],
-        "how": "Select an audio file (optional sibling `.srt`) → Quick Actions → **New Cloned Voice**. Enter a profile name in the Finder dialog.",
-    },
-    {
         "slug": "import-voice-zip",
         "name": "Import Voice ZIP",
         "summary": "Imports an exported Voicebox profile zip into the local app.",
@@ -885,17 +768,6 @@ PACKAGES = [
         "how": "Select a `.zip` / `.voicebox.zip` → Quick Actions → **Import Voice ZIP**.",
     },
     {
-        "slug": "add-sample-to-voice",
-        "name": "Add Sample to Voice",
-        "summary": "Adds another reference recording to an existing cloned voice.",
-        "readme": "Attaches another reference recording to an existing cloned voice so cloning quality can improve. You pick which profile receives the file.",
-        "tags": ["finder", "voicebox", "clone"],
-        "receives": ["files"],
-        "kind": "finder",
-        "file_types": ["public.audio"],
-        "how": "Select audio → Quick Actions → **Add Sample to Voice** → pick a profile.",
-    },
-    {
         "slug": "import-audio-into-voicebox",
         "name": "Import Audio into Voicebox",
         "summary": "Uploads a local recording into Voicebox History.",
@@ -905,17 +777,6 @@ PACKAGES = [
         "kind": "finder",
         "file_types": ["public.audio"],
         "how": "Select audio → Quick Actions → **Import Audio into Voicebox**.",
-    },
-    {
-        "slug": "set-profile-avatar",
-        "name": "Set Profile Avatar",
-        "summary": "Sets a Finder image as a Voicebox voice card avatar.",
-        "readme": "Sets the selected image as the picture on a Voicebox voice card after you choose which profile to update.",
-        "tags": ["finder", "voicebox", "avatar"],
-        "receives": ["files"],
-        "kind": "finder",
-        "file_types": ["public.image"],
-        "how": "Select an image → Quick Actions → **Set Profile Avatar** → pick a profile.",
     },
     {
         "slug": "export-voice",

@@ -21,6 +21,6 @@ Generate WAV from Text uses `POST /generate`, polls `GET /history/{id}` until `c
 
 ### Library actions (Voicebox `:17493`)
 
-Transcribe, clone, import zip/audio, add sample, avatar, export, load/unload Qwen, and clear cache still talk to Voicebox. Profile lists use Finder-front `choose from list`.
+Transcribe, import zip/audio, export, load/unload Qwen, and clear cache still talk to Voicebox. Profile lists use Finder-front `choose from list`.
 
 Do not poll `GET /generate/{id}/status` as one-shot JSON.

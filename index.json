@@ -40,18 +40,6 @@
       "path": "packages/transcribe-audio"
     },
     {
-      "id": "com.voicebox.quickaction.new-cloned-voice",
-      "name": "New Cloned Voice",
-      "summary": "Creates a cloned Voicebox profile from selected audio and a transcript.",
-      "version": "1.0.0",
-      "tags": [
-        "finder",
-        "voicebox",
-        "clone"
-      ],
-      "path": "packages/new-cloned-voice"
-    },
-    {
       "id": "com.voicebox.quickaction.import-voice-zip",
       "name": "Import Voice ZIP",
       "summary": "Imports an exported Voicebox profile zip into the local app.",
@@ -64,18 +52,6 @@
       "path": "packages/import-voice-zip"
     },
     {
-      "id": "com.voicebox.quickaction.add-sample-to-voice",
-      "name": "Add Sample to Voice",
-      "summary": "Adds another reference recording to an existing cloned voice.",
-      "version": "1.0.0",
-      "tags": [
-        "finder",
-        "voicebox",
-        "clone"
-      ],
-      "path": "packages/add-sample-to-voice"
-    },
-    {
       "id": "com.voicebox.quickaction.import-audio-into-voicebox",
       "name": "Import Audio into Voicebox",
       "summary": "Uploads a local recording into Voicebox History.",
@@ -86,18 +62,6 @@
         "history"
       ],
       "path": "packages/import-audio-into-voicebox"
-    },
-    {
-      "id": "com.voicebox.quickaction.set-profile-avatar",
-      "name": "Set Profile Avatar",
-      "summary": "Sets a Finder image as a Voicebox voice card avatar.",
-      "version": "1.0.0",
-      "tags": [
-        "finder",
-        "voicebox",
-        "avatar"
-      ],
-      "path": "packages/set-profile-avatar"
     },
     {
       "id": "com.voicebox.quickaction.export-voice",
