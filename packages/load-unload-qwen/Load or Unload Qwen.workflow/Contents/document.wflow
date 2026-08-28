@@ -369,54 +369,6 @@ sys.exit(4)
 PY
 }
 
-vb_voicebox_speak() {
-  local api="$1" name="$2" text="$3"
-  local rc err
-  set +e
-  err="$(/usr/bin/python3 - "$api" "$name" "$text" &lt;&lt;'PY'
-import json, sys, urllib.error, urllib.request
-
-api, name, text = sys.argv[1:4]
-body = json.dumps({"text": text, "profile": name}).encode()
-req = urllib.request.Request(
-    api.rstrip("/") + "/speak",
-    data=body,
-    headers={"Content-Type": "application/json"},
-    method="POST",
-)
-try:
-    with urllib.request.urlopen(req, timeout=30) as r:
-        gen = json.loads(r.read().decode() or "{}")
-except urllib.error.HTTPError as e:
-    print(e.read().decode("utf-8", "replace")[:500], file=sys.stderr)
-    sys.exit(4)
-except urllib.error.URLError as e:
-    print(str(e.reason)[:500], file=sys.stderr)
-    sys.exit(4)
-gen_id = gen.get("id")
-if not gen_id:
-    print(json.dumps(gen)[:500], file=sys.stderr)
-    sys.exit(4)
-print(gen_id)
-PY
-)"
-  rc=$?
-  set -e
-  if [[ $rc -ne 0 ]]; then
-    [[ -n "$err" ]] &amp;&amp; vb_log "${VB_QA_SLUG:-voicebox}" "voicebox speak error: ${err:0:200}"
-    return "$rc"
-  fi
-  set +e
-  vb_voicebox_wait "$api" "$err"
-  rc=$?
-  set -e
-  if [[ $rc -ne 0 ]]; then
-    vb_log "${VB_QA_SLUG:-voicebox}" "voicebox speak wait failed rc=$rc"
-    return "$rc"
-  fi
-  return 0
-}
-
 vb_voicebox_generate() {
   local api="$1" profile_id="$2" text="$3" out="$4"
   local rc err gen_id

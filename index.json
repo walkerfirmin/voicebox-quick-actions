@@ -4,18 +4,6 @@
   "updatedAt": "2026-08-22",
   "packages": [
     {
-      "id": "com.voicebox.quickaction.speak-selection",
-      "name": "Speak Selection",
-      "summary": "Speaks selected text with a Voicebox profile on your speakers.",
-      "version": "1.0.0",
-      "tags": [
-        "text",
-        "voicebox",
-        "speak"
-      ],
-      "path": "packages/speak-selection"
-    },
-    {
       "id": "com.voicebox.quickaction.generate-wav-from-text",
       "name": "Generate WAV from Text",
       "summary": "Turns a selected text file into spoken WAV saved beside it.",

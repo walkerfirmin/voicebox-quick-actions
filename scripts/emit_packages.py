@@ -320,54 +320,6 @@ sys.exit(4)
 PY
 }
 
-vb_voicebox_speak() {
-  local api="$1" name="$2" text="$3"
-  local rc err
-  set +e
-  err="$(/usr/bin/python3 - "$api" "$name" "$text" <<'PY'
-import json, sys, urllib.error, urllib.request
-
-api, name, text = sys.argv[1:4]
-body = json.dumps({"text": text, "profile": name}).encode()
-req = urllib.request.Request(
-    api.rstrip("/") + "/speak",
-    data=body,
-    headers={"Content-Type": "application/json"},
-    method="POST",
-)
-try:
-    with urllib.request.urlopen(req, timeout=30) as r:
-        gen = json.loads(r.read().decode() or "{}")
-except urllib.error.HTTPError as e:
-    print(e.read().decode("utf-8", "replace")[:500], file=sys.stderr)
-    sys.exit(4)
-except urllib.error.URLError as e:
-    print(str(e.reason)[:500], file=sys.stderr)
-    sys.exit(4)
-gen_id = gen.get("id")
-if not gen_id:
-    print(json.dumps(gen)[:500], file=sys.stderr)
-    sys.exit(4)
-print(gen_id)
-PY
-)"
-  rc=$?
-  set -e
-  if [[ $rc -ne 0 ]]; then
-    [[ -n "$err" ]] && vb_log "${VB_QA_SLUG:-voicebox}" "voicebox speak error: ${err:0:200}"
-    return "$rc"
-  fi
-  set +e
-  vb_voicebox_wait "$api" "$err"
-  rc=$?
-  set -e
-  if [[ $rc -ne 0 ]]; then
-    vb_log "${VB_QA_SLUG:-voicebox}" "voicebox speak wait failed rc=$rc"
-    return "$rc"
-  fi
-  return 0
-}
-
 vb_voicebox_generate() {
   local api="$1" profile_id="$2" text="$3" out="$4"
   local rc err gen_id
@@ -529,34 +481,6 @@ print(text)')"
 
 SCRIPTS: dict[str, str] = {}
 
-_SPEAK_BODY = r'''
-TEXT="$(vb_read_text "$@")"
-vb_log SPEAK_SLUG "text_len=${#TEXT}"
-if [[ -z "${TEXT//[$' \t\n\r']/}" ]]; then
-  vb_fail "No text selected. Highlight text, then run this from the Services menu."
-fi
-if (( ${#TEXT} > 500 )); then
-  TEXT="${TEXT:0:500}"
-fi
-API="$(vb_ensure)"
-PICK="$(vb_choose_profile "$API")"
-PID="$(printf "%s\n" "$PICK" | sed -n '1p')"
-NAME="$(printf "%s\n" "$PICK" | sed -n '2p')"
-[[ -n "$NAME" ]] || exit 0
-vb_log SPEAK_SLUG "voice=$NAME"
-OUT="/tmp/vb-SPEAK_SLUG.wav"
-set +e
-vb_voicebox_generate "$API" "$PID" "$TEXT" "$OUT"
-rc=$?
-set -e
-if [[ $rc -ne 0 || ! -s "$OUT" ]]; then
-  vb_fail "Could not speak with ${NAME}. Is Voicebox running?"
-fi
-vb_log SPEAK_SLUG "played $OUT"
-vb_ok "Speaking with ${NAME}"
-vb_play "$OUT"
-'''
-
 _STREAM_SPEAK_BODY = r'''
 TEXT="$(vb_read_text "$@")"
 vb_log stream-speak "text_len=${#TEXT}"
@@ -587,7 +511,6 @@ vb_ok "Streaming with ${NAME}"
 vb_play "$OUT"
 '''
 
-SCRIPTS["speak-selection"] = PRELUDE + _SPEAK_BODY.replace("SPEAK_SLUG", "speak-selection")
 SCRIPTS["stream-speak"] = PRELUDE + _STREAM_SPEAK_BODY
 
 SCRIPTS["generate-wav-from-text"] = PRELUDE + r'''
@@ -725,17 +648,6 @@ fi
 """
 
 PACKAGES = [
-    {
-        "slug": "speak-selection",
-        "name": "Speak Selection",
-        "summary": "Speaks selected text with a Voicebox profile on your speakers.",
-        "readme": "Reads highlighted text aloud via Voicebox `POST /generate`: polls History, exports audio, and plays once locally. Saves a generation entry in Voicebox.",
-        "tags": ["text", "voicebox", "speak"],
-        "receives": ["text"],
-        "kind": "text",
-        "file_types": [],
-        "how": "Select text → Services → **Speak Selection** → pick a Voicebox profile. Set `VOICEBOX_PROFILE` to skip the picker.",
-    },
     {
         "slug": "generate-wav-from-text",
         "name": "Generate WAV from Text",

@@ -18,7 +18,17 @@ packages/<slug>/
 
 This repo **is** the catalog root (same shape as MenuCue’s `QuickActionsCatalog/`). `workflow.zip` files are not committed; CI builds them for GitHub Pages.
 
-## Install locally (before Pages)
+## Install with MenuCue
+
+In MenuCue → **Quick Action Repo Manager…** → **Add Repository…**, paste:
+
+```
+https://walkerfirmin.github.io/voicebox-quick-actions/index.json
+```
+
+Only HTTPS indexes are accepted. `workflow.zip` files are built by CI and served from GitHub Pages (not committed to git).
+
+## Install locally (without MenuCue)
 
 Copy each `.workflow` into `~/Library/Services/`, or open it in Automator and save as a Quick Action.
 
@@ -29,16 +39,8 @@ done
 /System/Library/CoreServices/pbs -flush
 ```
 
-## Add to MenuCue later
-
-1. Push this repo and enable **Settings → Pages → Source = GitHub Actions**.
-2. After deploy, in MenuCue → **Quick Action Repo Manager…** → **Add Repository…**
-3. Paste `https://<user>.github.io/voicebox-quick-actions/index.json`
-
-Only HTTPS indexes are accepted.
-
 ## Packages
 
-**Build first:** Speak Selection, Generate WAV from Text, Transcribe Audio, Import Voice ZIP.
+**Build first:** Stream Speak, Generate WAV from Text, Transcribe Audio, Import Voice ZIP.
 
-**Nice later:** Export Voice, Load or Unload Qwen, Stream Speak.
+**Nice later:** Export Voice, Load or Unload Qwen.
