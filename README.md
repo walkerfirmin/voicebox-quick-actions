@@ -4,6 +4,8 @@ MenuCue-compatible catalog of Automator Quick Actions that talk to a local [Voic
 
 Voicebox must be running. If it is not, most actions try `open -a Voicebox` and wait for `/health`. Override the base URL with `VOICEBOX_API` (for example `http://127.0.0.1:17493`).
 
+**Debug logs:** each action writes to `/tmp/vb-qa-<slug>.log` (for example `/tmp/vb-qa-transcribe-audio.log`); all actions also append to `/tmp/vb-qa.log`.
+
 ## Layout
 
 ```text

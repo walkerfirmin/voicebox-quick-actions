@@ -8,4 +8,4 @@ Voicebox running locally.
 
 ## How to use
 
-Select wav/mp3/m4a in Finder → Quick Actions → **Transcribe Audio**.
+Select wav/mp3/m4a in Finder (click to select it first) → Services → **Transcribe Audio**. Voicebox must be running. Do not open this workflow in Automator — that breaks the Services menu entry.

@@ -10,16 +10,47 @@ from xml.sax.saxutils import escape as xml_escape
 
 ROOT = Path("/Users/admin/git/voicebox-quick-actions")
 
-PRELUDE = r'''
+PRELUDE = r"""
 set -euo pipefail
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+CLIP_DIR="/Users/admin/Music/sample-audio-clips"
+TTS_HOST="http://127.0.0.1:8002"
+LAST_CLIP="$HOME/Library/Application Support/voicebox-quick-actions/last-profile.txt"
+LAST_VB="$HOME/Library/Application Support/voicebox-quick-actions/last-vb-profile.txt"
+
+vb_log() {
+  local slug="$1"; shift
+  mkdir -p /tmp
+  echo "$(date '+%Y-%m-%d %H:%M:%S') $*" >> "/tmp/vb-qa-${slug}.log"
+  echo "$(date '+%Y-%m-%d %H:%M:%S') [$slug] $*" >> /tmp/vb-qa.log
+}
+
+vb_shell_start() {
+  export VB_QA_SLUG="$1"
+  vb_log "$1" "shell start argc=$#"
+}
 
 vb_fail() {
-  osascript >/dev/null 2>&1 <<EOF
-tell application "System Events" to activate
-display alert "Voicebox" message $(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$1")
-EOF
-  echo "FAIL $1" >> /tmp/vb-speak-selection.log
+  local msg="$1"
+  echo "$(date '+%Y-%m-%d %H:%M:%S') FAIL ${msg}" >> /tmp/vb-qa.log
+  if [[ -n "${VB_QA_SLUG:-}" ]]; then
+    echo "$(date '+%Y-%m-%d %H:%M:%S') FAIL ${msg}" >> "/tmp/vb-qa-${VB_QA_SLUG}.log"
+  fi
+  /usr/bin/python3 - "$msg" <<'PY'
+import json, subprocess, sys, tempfile
+from pathlib import Path
+msg = json.dumps(sys.argv[1])
+script = f'''
+tell application "Finder"
+  activate
+  display alert "Voicebox" message {msg}
+end tell
+'''
+p = Path(tempfile.mkstemp(suffix=".applescript")[1])
+p.write_text(script)
+subprocess.run(["osascript", str(p)], check=False)
+p.unlink(missing_ok=True)
+PY
   exit 1
 }
 
@@ -32,14 +63,16 @@ vb_base() {
     echo "${VOICEBOX_API%/}"
     return
   fi
-  local port
-  port="$(ps -axo command= | python3 -c 'import sys,re
+  local port=""
+  set +e
+  port="$(ps -axo command= 2>/dev/null | /usr/bin/python3 -c 'import sys,re
 for line in sys.stdin:
     m = re.search(r"voicebox-server.*--port\s+(\d+)", line)
     if m:
         print(m.group(1))
         break
 ')"
+  set -e
   if [[ -n "$port" ]]; then
     echo "http://127.0.0.1:${port}"
   else
@@ -47,26 +80,50 @@ for line in sys.stdin:
   fi
 }
 
+vb_curl() {
+  /usr/bin/osascript - "$@" <<'APPLESCRIPT'
+on run argv
+  set cmd to item 1 of argv
+  return do shell script cmd
+end run
+APPLESCRIPT
+}
+
 vb_ensure() {
   local api tries
   api="$(vb_base)"
-  if curl -sf --max-time 2 "${api}/health" >/dev/null 2>&1; then
+  if /usr/bin/curl -sf --max-time 2 "${api}/health" >/dev/null 2>&1 \
+    || vb_curl "/usr/bin/curl -sf --max-time 2 $(printf '%q' "${api}/health")" >/dev/null 2>&1; then
+    [[ -n "${VB_QA_SLUG:-}" ]] && vb_log "${VB_QA_SLUG}" "api=${api}"
     printf "%s" "$api"
     return
   fi
   vb_ok "Starting Voicebox…"
-  open -a Voicebox >/dev/null 2>&1 || true
+  /usr/bin/open -a Voicebox >/dev/null 2>&1 || true
   tries=0
   while (( tries < 20 )); do
     sleep 1
     api="$(vb_base)"
-    if curl -sf --max-time 2 "${api}/health" >/dev/null 2>&1; then
+    if /usr/bin/curl -sf --max-time 2 "${api}/health" >/dev/null 2>&1 \
+      || vb_curl "/usr/bin/curl -sf --max-time 2 $(printf '%q' "${api}/health")" >/dev/null 2>&1; then
+      [[ -n "${VB_QA_SLUG:-}" ]] && vb_log "${VB_QA_SLUG}" "api=${api}"
       printf "%s" "$api"
       return
     fi
     tries=$((tries + 1))
   done
   vb_fail "Voicebox is not running. Open Voicebox and try again."
+}
+
+vb_write_text() {
+  local path="$1" text="$2"
+  if printf "%s\n" "$text" > "$path" 2>/dev/null; then
+    printf "%s" "$path"
+    return 0
+  fi
+  path="${HOME}/Downloads/$(basename "$path")"
+  printf "%s\n" "$text" > "$path" || return 1
+  printf "%s" "$path"
 }
 
 vb_read_text() {
@@ -79,6 +136,148 @@ vb_read_text() {
   printf "%s" "$t"
 }
 
+vb_normalize_path() {
+  /usr/bin/python3 - "$1" <<'PY'
+import sys
+from urllib.parse import unquote, urlparse
+
+raw = sys.argv[1].strip()
+if raw.startswith("file://"):
+    p = urlparse(raw)
+    path = unquote(p.path)
+    if p.netloc and p.netloc not in ("", "localhost"):
+        path = f"/{p.netloc}{path}"
+    print(path)
+else:
+    print(raw)
+PY
+}
+
+vb_finder_selection() {
+  /usr/bin/osascript 2>/dev/null <<'APPLESCRIPT'
+tell application "Finder"
+  activate
+  delay 0.3
+  if (count of selection) is 0 then return ""
+  set out to ""
+  repeat with f in (selection as list)
+    set out to out & (POSIX path of (f as alias)) & linefeed
+  end repeat
+  return text 1 thru -2 of out
+end tell
+APPLESCRIPT
+}
+
+vb_collect_files() {
+  local -a files=()
+  local f line
+  for f in "$@"; do
+    [[ -n "$f" ]] || continue
+    files+=("$(vb_normalize_path "$f")")
+  done
+  if (( ${#files[@]} == 0 )) && [[ -p /dev/stdin || ! -t 0 ]]; then
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      line="${line//$'\r'/}"
+      [[ -n "$line" ]] || continue
+      files+=("$(vb_normalize_path "$line")")
+    done
+  fi
+  if (( ${#files[@]} == 0 )); then
+    while IFS= read -r line; do
+      [[ -n "$line" ]] || continue
+      files+=("$(vb_normalize_path "$line")")
+    done < <(vb_finder_selection)
+  fi
+  printf '%s\n' "${files[@]}"
+}
+
+vb_finder_choose() {
+  python3 - "$@" <<'PY'
+import json, subprocess, sys, tempfile
+from pathlib import Path
+title, prompt, default, last_path = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+items = json.loads(sys.argv[5])
+if not items:
+    sys.exit(2)
+if default not in items:
+    default = items[0]
+quoted = ", ".join(json.dumps(n) for n in items)
+script = f'''
+tell application "Finder"
+  activate
+  set theItems to {{{quoted}}}
+  set theChoice to choose from list theItems with title {json.dumps(title)} with prompt {json.dumps(prompt)} default items {{{json.dumps(default)}}} OK button name "OK" cancel button name "Cancel"
+  if theChoice is false then
+    return "CANCEL"
+  end if
+  return item 1 of theChoice
+end tell
+'''
+p = Path(tempfile.mkstemp(suffix=".applescript")[1])
+p.write_text(script)
+try:
+    out = subprocess.check_output(["osascript", str(p)], text=True).strip()
+finally:
+    p.unlink(missing_ok=True)
+if out in ("", "CANCEL", "false"):
+    sys.exit(0)
+Path(last_path).parent.mkdir(parents=True, exist_ok=True)
+Path(last_path).write_text(out + "\n", encoding="utf-8")
+print(out)
+PY
+}
+
+vb_pick_clip_voice() {
+  python3 - "$CLIP_DIR" "$LAST_CLIP" "${VOICEBOX_PROFILE:-}" <<'PY'
+import json, os, subprocess, sys, tempfile
+from pathlib import Path
+clip, last_path, forced = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3].strip()
+voices, seen = [], set()
+for wav in sorted(clip.glob("*.wav")):
+    stem = wav.stem[:-4] if wav.stem.endswith("_10s") else wav.stem
+    label = " ".join(p.capitalize() if p.lower() != "and" else p for p in stem.split("_"))
+    if label.lower() in seen:
+        continue
+    seen.add(label.lower())
+    voices.append(label)
+if not voices:
+    sys.exit(2)
+if forced:
+    match = next((n for n in voices if n.lower() == forced.lower()), None)
+    if not match:
+        sys.exit(2)
+    last_path.parent.mkdir(parents=True, exist_ok=True)
+    last_path.write_text(match + "\n", encoding="utf-8")
+    print(match)
+    sys.exit(0)
+last = last_path.read_text(encoding="utf-8").strip() if last_path.exists() else ""
+default = last if last in voices else voices[0]
+quoted = ", ".join(json.dumps(n) for n in voices)
+script = f'''
+tell application "Finder"
+  activate
+  set voiceNames to {{{quoted}}}
+  set theChoice to choose from list voiceNames with title "Voicebox" with prompt "Choose a voice" default items {{{json.dumps(default)}}} OK button name "Speak" cancel button name "Cancel"
+  if theChoice is false then
+    return "CANCEL"
+  end if
+  return item 1 of theChoice
+end tell
+'''
+p = Path(tempfile.mkstemp(suffix=".applescript")[1])
+p.write_text(script)
+try:
+    out = subprocess.check_output(["osascript", str(p)], text=True).strip()
+finally:
+    p.unlink(missing_ok=True)
+if out in ("", "CANCEL", "false"):
+    sys.exit(0)
+last_path.parent.mkdir(parents=True, exist_ok=True)
+last_path.write_text(out + "\n", encoding="utf-8")
+print(out)
+PY
+}
+
 vb_choose_profile() {
   local api="$1" out rc
   set +e
@@ -86,6 +285,7 @@ vb_choose_profile() {
   rc=$?
   set -e
   if [[ $rc -eq 0 && -z "$out" ]]; then
+    [[ -n "${VB_QA_SLUG:-}" ]] && vb_log "${VB_QA_SLUG}" "profile picker cancelled"
     exit 0
   fi
   if [[ $rc -ne 0 || -z "$out" ]]; then
@@ -96,26 +296,17 @@ vb_choose_profile() {
 
 vb_pick_profile() {
   local api="$1"
-  python3 - "$api" <<'PY'
-import json, os, subprocess, sys, tempfile, urllib.request
+  python3 - "$api" "$LAST_VB" "${VOICEBOX_PROFILE:-}" <<'PY'
+import json, subprocess, sys, tempfile, urllib.request
 from pathlib import Path
-
-api = sys.argv[1]
-log = Path("/tmp/vb-speak-selection.log")
-def logw(msg):
-    prev = log.read_text() if log.exists() else ""
-    log.write_text(prev + msg + "\n")
-
-forced = os.environ.get("VOICEBOX_PROFILE", "").strip()
-last_path = Path.home() / "Library/Application Support/voicebox-quick-actions/last-profile.txt"
+api, last_path_s, forced = sys.argv[1], sys.argv[2], sys.argv[3].strip()
+last_path = Path(last_path_s)
 try:
     profiles = json.loads(urllib.request.urlopen(api + "/profiles", timeout=15).read())
 except Exception as e:
-    logw(f"list failed: {e}")
     print(f"ERR list failed: {e}", file=sys.stderr)
     sys.exit(2)
 if not profiles:
-    logw("no profiles")
     sys.exit(2)
 by_name = {p["name"]: p["id"] for p in profiles}
 names = [p["name"] for p in profiles]
@@ -129,144 +320,92 @@ def emit(name):
 if forced:
     match = next((n for n in names if n.lower() == forced.lower()), None)
     if not match:
-        logw(f"VOICEBOX_PROFILE not found: {forced}")
         sys.exit(2)
     emit(match)
     sys.exit(0)
-
 last = last_path.read_text(encoding="utf-8").strip() if last_path.exists() else ""
 default = last if last in names else names[0]
 quoted = ", ".join(json.dumps(n) for n in names)
-script = f"""
-tell application "System Events" to activate
-delay 0.15
-set voiceNames to {{{quoted}}}
-set theChoice to choose from list voiceNames with title "Voicebox" with prompt "Choose a Voicebox voice" default items {{{json.dumps(default)}}} OK button name "Speak" cancel button name "Cancel"
-if theChoice is false then
-  return "CANCEL"
-end if
-return item 1 of theChoice
-"""
-with tempfile.NamedTemporaryFile("w", suffix=".applescript", delete=False) as fh:
-    fh.write(script)
-    path = fh.name
+script = f'''
+tell application "Finder"
+  activate
+  set voiceNames to {{{quoted}}}
+  set theChoice to choose from list voiceNames with title "Voicebox" with prompt "Choose a Voicebox voice" default items {{{json.dumps(default)}}} OK button name "OK" cancel button name "Cancel"
+  if theChoice is false then
+    return "CANCEL"
+  end if
+  return item 1 of theChoice
+end tell
+'''
+p = Path(tempfile.mkstemp(suffix=".applescript")[1])
+p.write_text(script)
 try:
-    out = subprocess.check_output(["osascript", path], text=True).strip()
+    out = subprocess.check_output(["osascript", str(p)], text=True).strip()
 finally:
-    Path(path).unlink(missing_ok=True)
-logw(f"picker out={out!r}")
+    p.unlink(missing_ok=True)
 if out in ("", "CANCEL", "false"):
     sys.exit(0)
 emit(out)
 PY
 }
 
-vb_srt_text() {
-  python3 - "$1" <<'PY'
-import re, sys
-from pathlib import Path
-p = Path(sys.argv[1])
-if not p.exists():
-    sys.exit(0)
-lines = []
-for line in p.read_text(encoding="utf-8", errors="replace").splitlines():
-    line = line.strip()
-    if not line or re.fullmatch(r"\d+", line) or re.match(r"\d{2}:\d{2}:\d{2}[,.]\d+", line):
-        continue
-    lines.append(line)
-print(" ".join(lines))
-PY
-}
-
-vb_json_field() {
-  python3 -c 'import json,sys; d=json.loads(sys.stdin.read() or "{}"); print(d.get(sys.argv[1] or "") or d.get("text") or d.get("transcript") or "")' "$1"
-}
-
-vb_transcribe_file() {
-  local api="$1" f="$2"
-  curl -sf --max-time 120 -X POST "${api}/transcribe" -F "file=@${f}" | python3 -c 'import json,sys
-d=json.loads(sys.stdin.read() or "{}")
-print(d.get("text") or d.get("transcript") or d.get("transcription") or "")'
-}
-'''
-
-SCRIPTS: dict[str, str] = {}
-
-SCRIPTS["speak-selection"] = PRELUDE + r'''
-echo "$(date '+%Y-%m-%d %H:%M:%S') speak-selection start args=$#" >> /tmp/vb-speak-selection.log
-TEXT="$(vb_read_text "$@")"
-echo "text_len=${#TEXT}" >> /tmp/vb-speak-selection.log
-if [[ -z "${TEXT//[$' \t\n\r']/}" ]]; then
-  vb_fail "No text selected. Highlight text, then run Speak Selection from the Services menu."
-fi
-if (( ${#TEXT} > 500 )); then
-  TEXT="${TEXT:0:500}"
-fi
-CLIP_DIR="/Users/admin/Music/sample-audio-clips"
-TTS_HOST="http://127.0.0.1:8002"
-LAST="$HOME/Library/Application Support/voicebox-quick-actions/last-profile.txt"
-NAME="${VOICEBOX_PROFILE:-}"
-if [[ -z "$NAME" ]]; then
-  NAME="$(python3 - "$CLIP_DIR" "$LAST" <<'PY'
+vb_finder_dialog() {
+  python3 - "$1" "$2" <<'PY'
 import json, subprocess, sys, tempfile
 from pathlib import Path
-
-clip = Path(sys.argv[1])
-last_path = Path(sys.argv[2])
-voices = []
-seen = set()
-for wav in sorted(clip.glob("*.wav")):
-    stem = wav.stem
-    if stem.endswith("_10s"):
-        stem = stem[: -4]
-    label = " ".join(p.capitalize() if p.lower() != "and" else p for p in stem.split("_"))
-    if label.lower() in seen:
-        continue
-    seen.add(label.lower())
-    voices.append(label)
-if not voices:
-    sys.exit(2)
-last = last_path.read_text(encoding="utf-8").strip() if last_path.exists() else ""
-default = last if last in voices else voices[0]
-quoted = ", ".join(json.dumps(n) for n in voices)
-script = f"""
+title, prompt = sys.argv[1], sys.argv[2]
+script = f'''
 tell application "Finder"
   activate
-  set voiceNames to {{{quoted}}}
-  set theChoice to choose from list voiceNames with title "Speak Selection" with prompt "Choose a voice" default items {{{json.dumps(default)}}} OK button name "Speak" cancel button name "Cancel"
-  if theChoice is false then
+  try
+    set theResult to display dialog {json.dumps(prompt)} default answer "" with title {json.dumps(title)} buttons {{"Cancel", "OK"}} default button "OK" cancel button "Cancel"
+    return text returned of theResult
+  on error
     return "CANCEL"
-  end if
-  return item 1 of theChoice
+  end try
 end tell
-"""
-with tempfile.NamedTemporaryFile("w", suffix=".applescript", delete=False) as fh:
-    fh.write(script)
-    path = fh.name
+'''
+p = Path(tempfile.mkstemp(suffix=".applescript")[1])
+p.write_text(script)
 try:
-    out = subprocess.check_output(["osascript", path], text=True).strip()
+    out = subprocess.check_output(["osascript", str(p)], text=True).strip()
 finally:
-    Path(path).unlink(missing_ok=True)
-if out in ("", "CANCEL", "false"):
+    p.unlink(missing_ok=True)
+if out in ("", "CANCEL"):
     sys.exit(0)
-last_path.parent.mkdir(parents=True, exist_ok=True)
-last_path.write_text(out + "\n", encoding="utf-8")
 print(out)
 PY
-)"
-  rc=$?
-  if [[ $rc -eq 0 && -z "$NAME" ]]; then
-    exit 0
-  fi
-  if [[ $rc -ne 0 || -z "$NAME" ]]; then
-    vb_fail "Could not show the voice picker."
-  fi
-fi
-mkdir -p "$(dirname "$LAST")"
-printf "%s\n" "$NAME" > "$LAST"
-echo "voice=$NAME via mlx :8002" >> /tmp/vb-speak-selection.log
-OUT="/tmp/vb-speak-selection.mp3"
-python3 - "$TTS_HOST" "$CLIP_DIR" "$NAME" "$TEXT" "$OUT" <<'PY'
+}
+
+vb_finder_confirm() {
+  python3 - "$1" "$2" <<'PY'
+import json, subprocess, sys, tempfile
+from pathlib import Path
+title, prompt = sys.argv[1], sys.argv[2]
+script = f'''
+tell application "Finder"
+  activate
+  try
+    display dialog {json.dumps(prompt)} with title {json.dumps(title)} buttons {{"Cancel", "OK"}} default button "Cancel" cancel button "Cancel"
+    return "OK"
+  on error
+    return "CANCEL"
+  end try
+end tell
+'''
+p = Path(tempfile.mkstemp(suffix=".applescript")[1])
+p.write_text(script)
+try:
+    out = subprocess.check_output(["osascript", str(p)], text=True).strip()
+finally:
+    p.unlink(missing_ok=True)
+print(out)
+PY
+}
+
+vb_mlx_synth() {
+  local name="$1" text="$2" out="$3"
+  python3 - "$TTS_HOST" "$CLIP_DIR" "$name" "$text" "$out" <<'PY'
 import json, re, sys, urllib.error, urllib.request
 from pathlib import Path
 host, clip_dir, name, text, out = sys.argv[1:6]
@@ -315,73 +454,174 @@ except urllib.error.HTTPError as e:
     sys.exit(4)
 print(wav.name)
 PY
-RC=$?
-if [[ $RC -ne 0 || ! -s "$OUT" ]]; then
-  echo "mlx failed rc=$RC" >> /tmp/vb-speak-selection.log
+}
+
+vb_play() {
+  local f="$1"
+  if command -v ffplay >/dev/null; then
+    ffplay -nodisp -autoexit -loglevel error "$f"
+  else
+    afplay "$f"
+  fi
+}
+
+vb_srt_text() {
+  python3 - "$1" <<'PY'
+import re, sys
+from pathlib import Path
+p = Path(sys.argv[1])
+if not p.exists():
+    sys.exit(0)
+lines = []
+for line in p.read_text(encoding="utf-8", errors="replace").splitlines():
+    line = line.strip()
+    if not line or re.fullmatch(r"\d+", line) or re.match(r"\d{2}:\d{2}:\d{2}[,.]\d+", line):
+        continue
+    lines.append(line)
+print(" ".join(lines))
+PY
+}
+
+vb_transcribe_file() {
+  local api="$1" f="$2"
+  local cmd resp rc
+  cmd="$(/usr/bin/python3 -c 'import shlex,sys; api,f=sys.argv[1],sys.argv[2]; url=api+"/transcribe"; print(f"/usr/bin/curl -s --max-time 120 -X POST {shlex.quote(url)} -F file=@{shlex.quote(f)}")' "$api" "$f")"
+  set +e
+  resp="$(/usr/bin/curl -s --max-time 120 -X POST "${api}/transcribe" -F "file=@${f}")"
+  rc=$?
+  if [[ $rc -ne 0 || -z "$resp" ]]; then
+    resp="$(vb_curl "$cmd")"
+    rc=$?
+  fi
+  set -e
+  if [[ $rc -ne 0 || -z "$resp" ]]; then
+    vb_fail "Transcription request failed for $(basename "$f"). Is Voicebox running?"
+  fi
+  local text
+  text="$(printf "%s" "$resp" | /usr/bin/python3 -c 'import json,sys
+d=json.loads(sys.stdin.read() or "{}")
+if "detail" in d:
+    detail = d["detail"]
+    if isinstance(detail, dict):
+        msg = detail.get("message") or detail.get("detail") or str(detail)
+    else:
+        msg = str(detail)
+    print(f"ERROR:{msg}")
+    sys.exit(0)
+text = d.get("text") or d.get("transcript") or d.get("transcription") or ""
+print(text)')"
+  if [[ "$text" == ERROR:* ]]; then
+    vb_fail "${text#ERROR:}"
+  fi
+  [[ -n "$text" ]] || vb_fail "Empty transcript for $(basename "$f")."
+  printf "%s" "$text"
+}
+"""
+
+SCRIPTS: dict[str, str] = {}
+
+_SPEAK_BODY = r'''
+TEXT="$(vb_read_text "$@")"
+vb_log SPEAK_SLUG "text_len=${#TEXT}"
+if [[ -z "${TEXT//[$' \t\n\r']/}" ]]; then
+  vb_fail "No text selected. Highlight text, then run this from the Services menu."
+fi
+if (( ${#TEXT} > 500 )); then
+  TEXT="${TEXT:0:500}"
+fi
+set +e
+NAME="$(vb_pick_clip_voice)"
+rc=$?
+set -e
+if [[ $rc -eq 0 && -z "$NAME" ]]; then
+  vb_log SPEAK_SLUG "picker cancelled"
+  exit 0
+fi
+if [[ $rc -ne 0 || -z "$NAME" ]]; then
+  vb_fail "Could not show the voice picker."
+fi
+vb_log SPEAK_SLUG "voice=$NAME mlx :8002"
+OUT="/tmp/vb-SPEAK_SLUG.mp3"
+set +e
+vb_mlx_synth "$NAME" "$TEXT" "$OUT"
+rc=$?
+set -e
+if [[ $rc -ne 0 || ! -s "$OUT" ]]; then
+  vb_log SPEAK_SLUG "mlx failed rc=$rc"
   vb_fail "Could not synthesize with $NAME (MLX TTS on port 8002)."
 fi
 vb_ok "Speaking with ${NAME}"
-if command -v ffplay >/dev/null; then
-  ffplay -nodisp -autoexit -loglevel error "$OUT"
-else
-  afplay "$OUT"
-fi
+vb_play "$OUT"
 '''
 
+SCRIPTS["speak-selection"] = PRELUDE + _SPEAK_BODY.replace("SPEAK_SLUG", "speak-selection")
+SCRIPTS["stream-speak"] = PRELUDE + _SPEAK_BODY.replace("SPEAK_SLUG", "stream-speak")
+
 SCRIPTS["generate-wav-from-text"] = PRELUDE + r'''
-API="$(vb_ensure)"
-PICK="$(vb_choose_profile "$API")"
-PID="$(printf "%s\n" "$PICK" | sed -n '1p')"
-NAME="$(printf "%s\n" "$PICK" | sed -n '2p')"
 (( $# > 0 )) || vb_fail "Select a text file in Finder."
+set +e
+NAME="$(vb_pick_clip_voice)"
+rc=$?
+set -e
+if [[ $rc -eq 0 && -z "$NAME" ]]; then
+  vb_log generate-wav-from-text "picker cancelled"
+  exit 0
+fi
+if [[ $rc -ne 0 || -z "$NAME" ]]; then
+  vb_fail "Could not show the voice picker."
+fi
+vb_log generate-wav-from-text "voice=$NAME"
 for f in "$@"; do
+  f="$(vb_normalize_path "$f")"
   [[ -f "$f" ]] || continue
   TEXT="$(cat "$f")"
   if [[ -z "${TEXT//[$' \t\n\r']/}" ]]; then
     vb_fail "Empty file: $f"
   fi
-  BODY="$(python3 -c 'import json,sys; print(json.dumps({"profile_id": sys.argv[1], "text": sys.argv[2], "engine": "qwen", "language": "en"}))' "$PID" "$TEXT")"
-  RESP="$(curl -sf --max-time 60 -X POST "${API}/generate" -H "Content-Type: application/json" -d "$BODY")" \
-    || vb_fail "Generate request failed."
-  GID="$(printf "%s" "$RESP" | python3 -c 'import json,sys; d=json.loads(sys.stdin.read()); print(d.get("id") or d.get("generation_id") or "")')"
-  [[ -n "$GID" ]] || vb_fail "No generation id returned."
-  STATUS=""
-  for _ in {1..180}; do
-    ST="$(curl -sf --max-time 10 "${API}/generate/${GID}/status")" || true
-    STATUS="$(printf "%s" "$ST" | python3 -c 'import json,sys
-try:
-  d=json.loads(sys.stdin.read() or "{}")
-except Exception:
-  d={}
-print((d.get("status") or d.get("state") or "").lower())')"
-    case "$STATUS" in
-      completed|complete|done|success|ready) break ;;
-      failed|error|cancelled|canceled) vb_fail "Generation failed ($STATUS)." ;;
-    esac
-    sleep 1
-  done
+  if (( ${#TEXT} > 4000 )); then
+    TEXT="${TEXT:0:4000}"
+  fi
   DIR="$(dirname "$f")"
   BASE="$(basename "$f")"
   STEM="${BASE%.*}"
-  OUT="${DIR}/${STEM}.wav"
-  curl -sf --max-time 120 -L "${API}/audio/${GID}" -o "$OUT" || vb_fail "Could not download audio."
-  vb_ok "Saved ${STEM}.wav using ${NAME}."
+  OUT="${DIR}/${STEM}.mp3"
+  set +e
+  vb_mlx_synth "$NAME" "$TEXT" "$OUT"
+  rc=$?
+  set -e
+  if [[ $rc -ne 0 || ! -s "$OUT" ]]; then
+    vb_fail "Could not synthesize ${STEM}.mp3 with $NAME."
+  fi
+  vb_log generate-wav-from-text "wrote $OUT"
+  vb_ok "Saved ${STEM}.mp3 using ${NAME}."
 done
 '''
 
 SCRIPTS["transcribe-audio"] = PRELUDE + r'''
+(( $# > 0 )) || vb_fail "Select an audio file in Finder, then run Transcribe Audio from the Services menu."
 API="$(vb_ensure)"
-(( $# > 0 )) || vb_fail "Select an audio file in Finder."
+processed=0
 for f in "$@"; do
-  [[ -f "$f" ]] || continue
+  [[ -f "$f" ]] || { vb_log transcribe-audio "skip missing $f"; continue; }
+  vb_log transcribe-audio "transcribing $(basename "$f")"
+  set +e
   TEXT="$(vb_transcribe_file "$API" "$f")"
-  [[ -n "$TEXT" ]] || vb_fail "Empty transcript for $f"
+  rc=$?
+  set -e
+  if [[ $rc -ne 0 ]]; then
+    vb_fail "Transcription failed for $(basename "$f")."
+  fi
+  [[ -n "$TEXT" ]] || vb_fail "Empty transcript for $(basename "$f")"
   DIR="$(dirname "$f")"
   BASE="$(basename "$f")"
   STEM="${BASE%.*}"
-  printf "%s\n" "$TEXT" > "${DIR}/${STEM}.txt"
-  vb_ok "Wrote ${STEM}.txt"
+  OUT="$(vb_write_text "${DIR}/${STEM}.txt" "$TEXT")" || vb_fail "Could not write ${STEM}.txt"
+  /usr/bin/open -R "$OUT" >/dev/null 2>&1 || true
+  vb_log transcribe-audio "wrote $OUT"
+  vb_ok "Wrote $(basename "$OUT")"
+  processed=$((processed + 1))
 done
+(( processed > 0 )) || vb_fail "Could not read the selected audio file(s)."
 '''
 
 SCRIPTS["new-cloned-voice"] = PRELUDE + r'''
@@ -389,16 +629,24 @@ API="$(vb_ensure)"
 (( $# > 0 )) || vb_fail "Select an audio file in Finder."
 AUDIO=""
 for f in "$@"; do
+  f="$(vb_normalize_path "$f")"
   case "${f:l}" in
     *.wav|*.mp3|*.m4a|*.flac|*.ogg|*.aiff|*.aif) AUDIO="$f"; break ;;
   esac
 done
-[[ -n "$AUDIO" ]] || AUDIO="$1"
+[[ -n "$AUDIO" ]] || AUDIO="$(vb_normalize_path "$1")"
 [[ -f "$AUDIO" ]] || vb_fail "Not a file: $AUDIO"
-NAME="$(osascript -e 'text returned of (display dialog "New voice name:" default answer "" with title "Voicebox")')" \
-  || exit 0
-NAME="$(printf "%s" "$NAME" | python3 -c 'import sys; print(sys.stdin.read().strip())')"
-[[ -n "$NAME" ]] || vb_fail "Name required."
+set +e
+NAME="$(vb_finder_dialog "New Cloned Voice" "New voice name:")"
+rc=$?
+set -e
+if [[ $rc -eq 0 && -z "$NAME" ]]; then
+  vb_log new-cloned-voice "dialog cancelled"
+  exit 0
+fi
+if [[ $rc -ne 0 || -z "$NAME" ]]; then
+  vb_fail "Name required."
+fi
 DIR="$(dirname "$AUDIO")"
 BASE="$(basename "$AUDIO")"
 STEM="${BASE%.*}"
@@ -418,6 +666,7 @@ PROF="$(curl -sf --max-time 30 -X POST "${API}/profiles" -H "Content-Type: appli
 PID="$(printf "%s" "$PROF" | python3 -c 'import json,sys; print(json.loads(sys.stdin.read())["id"])')"
 curl -sf --max-time 60 -X POST "${API}/profiles/${PID}/samples" -F "file=@${AUDIO}" -F "reference_text=${REF}" >/dev/null \
   || vb_fail "Could not add sample."
+vb_log new-cloned-voice "created $NAME $PID"
 vb_ok "Created voice ${NAME}."
 '''
 
@@ -425,9 +674,11 @@ SCRIPTS["import-voice-zip"] = PRELUDE + r'''
 API="$(vb_ensure)"
 (( $# > 0 )) || vb_fail "Select a Voicebox profile zip in Finder."
 for f in "$@"; do
+  f="$(vb_normalize_path "$f")"
   [[ -f "$f" ]] || continue
   curl -sf --max-time 60 -X POST "${API}/profiles/import" -F "file=@${f}" >/dev/null \
     || vb_fail "Import failed for $f"
+  vb_log import-voice-zip "imported $f"
   vb_ok "Imported $(basename "$f")"
 done
 '''
@@ -439,6 +690,7 @@ PID="$(printf "%s\n" "$PICK" | sed -n '1p')"
 NAME="$(printf "%s\n" "$PICK" | sed -n '2p')"
 (( $# > 0 )) || vb_fail "Select an audio file in Finder."
 for AUDIO in "$@"; do
+  AUDIO="$(vb_normalize_path "$AUDIO")"
   [[ -f "$AUDIO" ]] || continue
   DIR="$(dirname "$AUDIO")"
   BASE="$(basename "$AUDIO")"
@@ -455,6 +707,7 @@ for AUDIO in "$@"; do
   [[ -n "$REF" ]] || vb_fail "Need a transcript for $AUDIO"
   curl -sf --max-time 60 -X POST "${API}/profiles/${PID}/samples" -F "file=@${AUDIO}" -F "reference_text=${REF}" >/dev/null \
     || vb_fail "Could not add sample to ${NAME}."
+  vb_log add-sample-to-voice "sample $AUDIO -> $NAME"
   vb_ok "Added sample to ${NAME}."
 done
 '''
@@ -463,9 +716,11 @@ SCRIPTS["import-audio-into-voicebox"] = PRELUDE + r'''
 API="$(vb_ensure)"
 (( $# > 0 )) || vb_fail "Select an audio file in Finder."
 for f in "$@"; do
+  f="$(vb_normalize_path "$f")"
   [[ -f "$f" ]] || continue
   curl -sf --max-time 60 -X POST "${API}/generate/import" -F "file=@${f}" >/dev/null \
     || vb_fail "Import failed for $f"
+  vb_log import-audio-into-voicebox "imported $f"
   vb_ok "Imported $(basename "$f") into History."
 done
 '''
@@ -476,10 +731,11 @@ PICK="$(vb_choose_profile "$API")"
 PID="$(printf "%s\n" "$PICK" | sed -n '1p')"
 NAME="$(printf "%s\n" "$PICK" | sed -n '2p')"
 (( $# > 0 )) || vb_fail "Select an image in Finder."
-IMG="$1"
+IMG="$(vb_normalize_path "$1")"
 [[ -f "$IMG" ]] || vb_fail "Not a file: $IMG"
 curl -sf --max-time 30 -X POST "${API}/profiles/${PID}/avatar" -F "file=@${IMG}" >/dev/null \
   || vb_fail "Avatar upload failed."
+vb_log set-profile-avatar "avatar $IMG -> $NAME"
 vb_ok "Updated avatar for ${NAME}."
 '''
 
@@ -492,31 +748,70 @@ SAFE="$(python3 -c 'import re,sys; print(re.sub(r"[^A-Za-z0-9._-]+", "-", sys.ar
 OUT="${HOME}/Downloads/${SAFE}.voicebox.zip"
 curl -sf --max-time 60 -L "${API}/profiles/${PID}/export" -o "$OUT" \
   || vb_fail "Export failed."
+vb_log export-voice "wrote $OUT"
 vb_ok "Saved ${SAFE}.voicebox.zip to Downloads."
 '''
 
-SCRIPTS["load-unload-qwen"] = PRELUDE + r'''
+SCRIPTS["load-unload-qwen"] = PRELUDE + r"""
 API="$(vb_ensure)"
-CHOICE="$(osascript -e 'choose from list {"Load Qwen 1.7B", "Unload model"} with prompt "Voicebox model" OK button name "Run"')" \
-  || exit 0
-[[ "$CHOICE" == "false" ]] && exit 0
+set +e
+CHOICE="$(python3 - "$LAST_VB" <<'PY'
+import json, subprocess, sys, tempfile
+from pathlib import Path
+items = ["Load Qwen 1.7B", "Unload model"]
+quoted = ", ".join(json.dumps(n) for n in items)
+script = f'''
+tell application "Finder"
+  activate
+  set theItems to {{{quoted}}}
+  set theChoice to choose from list theItems with title "Voicebox" with prompt "Voicebox model" default items {{"Load Qwen 1.7B"}} OK button name "Run" cancel button name "Cancel"
+  if theChoice is false then
+    return "CANCEL"
+  end if
+  return item 1 of theChoice
+end tell
+'''
+p = Path(tempfile.mkstemp(suffix=".applescript")[1])
+p.write_text(script)
+try:
+    out = subprocess.check_output(["osascript", str(p)], text=True).strip()
+finally:
+    p.unlink(missing_ok=True)
+print(out)
+PY
+)"
+rc=$?
+set -e
+if [[ $rc -ne 0 || "$CHOICE" == "CANCEL" || -z "$CHOICE" ]]; then
+  vb_log load-unload-qwen "picker cancelled"
+  exit 0
+fi
 if [[ "$CHOICE" == "Load Qwen 1.7B" ]]; then
   curl -sf --max-time 300 -X POST "${API}/models/load?model_size=1.7B" >/dev/null \
     || vb_fail "Load failed (the model may still be downloading)."
+  vb_log load-unload-qwen "load requested"
   vb_ok "Load requested for Qwen 1.7B."
 else
   curl -sf --max-time 60 -X POST "${API}/models/unload" >/dev/null \
     || vb_fail "Unload failed."
+  vb_log load-unload-qwen "unload requested"
   vb_ok "Unload requested."
 fi
-'''
+"""
 
 SCRIPTS["clear-cache"] = PRELUDE + r'''
 API="$(vb_ensure)"
-osascript -e 'display dialog "Clear Voicebox generation cache? Profiles are not deleted." with title "Voicebox" buttons {"Cancel", "Clear"} default button "Cancel" cancel button "Cancel"' >/dev/null \
-  || exit 0
+set +e
+CONF="$(vb_finder_confirm "Voicebox" "Clear Voicebox generation cache? Profiles are not deleted.")"
+rc=$?
+set -e
+if [[ $rc -ne 0 || "$CONF" != "OK" ]]; then
+  vb_log clear-cache "confirm cancelled"
+  exit 0
+fi
 curl -sf --max-time 60 -X POST "${API}/cache/clear" >/dev/null \
   || vb_fail "Clear cache failed."
+vb_log clear-cache "cleared"
 vb_ok "Cache cleared."
 '''
 
@@ -531,59 +826,32 @@ TEXT="$(printf "%s" "$RESP" | python3 -c 'import json,sys
 d=json.loads(sys.stdin.read() or "{}")
 print(d.get("text") or d.get("utterance") or d.get("content") or json.dumps(d))')"
 printf "%s" "$TEXT" | pbcopy
+vb_log compose-in-character "copied for $NAME"
 vb_ok "Copied in-character line for ${NAME}."
-'''
-
-SCRIPTS["stream-speak"] = PRELUDE + r'''
-API="$(vb_ensure)"
-TEXT="$(vb_read_text "$@")"
-if [[ -z "${TEXT//[$' \t\n\r']/}" ]]; then
-  vb_fail "No text selected. Highlight text, then run Stream Speak from the Services menu."
-fi
-PICK="$(vb_choose_profile "$API")"
-PID="$(printf "%s\n" "$PICK" | sed -n '1p')"
-NAME="$(printf "%s\n" "$PICK" | sed -n '2p')"
-BODY="$(python3 -c 'import json,sys; print(json.dumps({"profile_id": sys.argv[1], "text": sys.argv[2], "engine": "qwen", "language": "en"}))' "$PID" "$TEXT")"
-TMP="$(mktemp -t vbstream)"
-HDR="$(mktemp -t vbhdr)"
-CODE="$(curl -sS --max-time 120 -X POST "${API}/generate/stream" -H "Content-Type: application/json" -d "$BODY" -D "$HDR" -o "$TMP" -w "%{http_code}" || true)"
-CT="$(python3 -c 'import sys
-p=open(sys.argv[1],encoding="utf-8",errors="replace").read().lower()
-print("audio" if "content-type:" in p and "audio" in p else "other")
-' "$HDR")"
-if [[ "$CODE" == "200" && "$CT" == "audio" ]]; then
-  afplay "$TMP" || vb_fail "Could not play streamed audio."
-else
-  SBODY="$(python3 -c 'import json,sys; print(json.dumps({"text": sys.argv[1], "profile": sys.argv[2], "personality": False, "engine": "qwen"}))' "$TEXT" "$NAME")"
-  curl -sf --max-time 120 -X POST "${API}/speak" -H "Content-Type: application/json" -d "$SBODY" >/dev/null \
-    || vb_fail "Stream failed; speak fallback also failed."
-  vb_ok "Played via /speak (${NAME})."
-fi
-rm -f "$TMP" "$HDR"
 '''
 
 PACKAGES = [
     {
         "slug": "speak-selection",
         "name": "Speak Selection",
-        "summary": "Speaks selected text in a Voicebox cloned voice on your speakers.",
-        "readme": "Reads the highlighted text aloud in a chosen Voicebox voice and plays it on your speakers. Does not save a file.",
+        "summary": "Speaks selected text in a chosen sample voice on your speakers.",
+        "readme": "Reads highlighted text aloud using the local MLX TTS server (port 8002) and a sample clip voice. Does not use Voicebox's 1.7B generate queue.",
         "tags": ["text", "voicebox", "speak"],
         "receives": ["text"],
         "kind": "text",
         "file_types": [],
-        "how": "Select text → Services → **Speak Selection**. A Finder voice list appears (last voice is pre-selected). Audio plays via the local MLX TTS server on port 8002. Set `VOICEBOX_PROFILE` to skip the picker.",
+        "how": "Select text → Services → **Speak Selection**. A Finder voice list appears. Audio plays via MLX TTS on port 8002. Set `VOICEBOX_PROFILE` to skip the picker.",
     },
     {
         "slug": "generate-wav-from-text",
         "name": "Generate WAV from Text",
-        "summary": "Turns a selected text file into a spoken WAV saved beside it.",
-        "readme": "Turns a selected text file into spoken audio using a chosen voice, waits until generation finishes, and saves a WAV next to the original file.",
+        "summary": "Turns a selected text file into spoken MP3 saved beside it.",
+        "readme": "Synthesizes a selected text file with the local MLX TTS server (port 8002) and saves `<stem>.mp3` next to the file. Does not use Voicebox's generate queue.",
         "tags": ["finder", "voicebox", "generate"],
         "receives": ["files"],
         "kind": "finder",
         "file_types": ["public.text"],
-        "how": "Select a `.txt` or `.md` file in Finder → Quick Actions → **Generate WAV from Text**.",
+        "how": "Select a `.txt` or `.md` file in Finder → Quick Actions → **Generate WAV from Text** → pick a voice. Uses MLX TTS on port 8002. Writes `<stem>.mp3` beside the file.",
     },
     {
         "slug": "transcribe-audio",
@@ -593,8 +861,8 @@ PACKAGES = [
         "tags": ["finder", "voicebox", "transcribe"],
         "receives": ["files"],
         "kind": "finder",
-        "file_types": ["public.audio"],
-        "how": "Select wav/mp3/m4a in Finder → Quick Actions → **Transcribe Audio**.",
+        "file_types": ["public.audio", "public.mp3", "public.mpeg-4-audio", "com.apple.m4a-audio", "public.aiff-audio"],
+        "how": "Select wav/mp3/m4a in Finder (click to select it first) → Services → **Transcribe Audio**. Voicebox must be running. Do not open this workflow in Automator — that breaks the Services menu entry.",
     },
     {
         "slug": "new-cloned-voice",
@@ -605,7 +873,7 @@ PACKAGES = [
         "receives": ["files"],
         "kind": "finder",
         "file_types": ["public.audio"],
-        "how": "Select an audio file (optional sibling `.srt`) → Quick Actions → **New Cloned Voice**. Enter a profile name.",
+        "how": "Select an audio file (optional sibling `.srt`) → Quick Actions → **New Cloned Voice**. Enter a profile name in the Finder dialog.",
     },
     {
         "slug": "import-voice-zip",
@@ -698,16 +966,15 @@ PACKAGES = [
     {
         "slug": "stream-speak",
         "name": "Stream Speak",
-        "summary": "Speaks selected text via stream playback, falling back to /speak.",
-        "readme": "Starts speaking selected text as audio arrives when `/generate/stream` returns audio; otherwise falls back to `POST /speak`.",
+        "summary": "Speaks selected text via local MLX TTS (same path as Speak Selection).",
+        "readme": "Same as Speak Selection: Finder voice picker, then local MLX TTS on port 8002 and speaker playback. Does not use Voicebox `/generate/stream`.",
         "tags": ["text", "voicebox", "speak"],
         "receives": ["text"],
         "kind": "text",
         "file_types": [],
-        "how": "Select text → Services → **Stream Speak** → pick a voice.",
+        "how": "Select text → Services → **Stream Speak** → pick a voice. Uses MLX on port 8002.",
     },
 ]
-
 
 def uuid_for(slug: str, n: int) -> str:
     return str(uuid.uuid5(uuid.NAMESPACE_URL, f"voicebox-qa:{slug}:{n}")).upper()
@@ -720,6 +987,10 @@ def info_plist(pkg: dict) -> str:
     if pkg["kind"] == "finder":
         types = "".join(f"\t\t\t\t<string>{t}</string>\n" for t in pkg["file_types"])
         ns_extra = f"""
+			<key>NSBackgroundColorName</key>
+			<string>background</string>
+			<key>NSIconName</key>
+			<string>NSActionTemplate</string>
 			<key>NSRequiredContext</key>
 			<dict>
 				<key>NSApplicationIdentifier</key>
@@ -788,9 +1059,9 @@ def workflow_meta(pkg: dict) -> str:
 		<key>serviceOutputTypeIdentifier</key>
 		<string>com.apple.Automator.nothing</string>
 		<key>serviceProcessesInput</key>
-		<integer>0</integer>
+		<integer>1</integer>
 		<key>workflowTypeIdentifier</key>
-		<string>com.apple.Automator.services.quickaction</string>"""
+		<string>com.apple.Automator.servicesMenu</string>"""
     if pkg["kind"] == "text":
         return """		<key>inputTypeIdentifier</key>
 		<string>com.apple.Automator.text</string>
@@ -828,23 +1099,74 @@ def workflow_meta(pkg: dict) -> str:
 		<string>com.apple.Automator.servicesMenu</string>"""
 
 
-def document_wflow(pkg: dict) -> str:
-    script = textwrap.dedent(SCRIPTS[pkg["slug"]]).strip() + "\n"
-    input_method = 0 if pkg["kind"] == "text" else 1
-    optional = "true" if pkg["kind"] != "finder" else "true"
-    return f"""<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-	<key>AMApplicationBuild</key>
-	<string>523</string>
-	<key>AMApplicationVersion</key>
-	<string>2.10</string>
-	<key>AMDocumentVersion</key>
-	<string>2</string>
-	<key>actions</key>
-	<array>
-		<dict>
+FINDER_PATHS_APPLESCRIPT = """on run {input, parameters}
+	set logPath to "/tmp/vb-qa-__SLUG__.log"
+	set ts to do shell script "date '+%Y-%m-%d %H:%M:%S'"
+	do shell script "echo " & quoted form of (ts & " applescript start items=" & (count of input)) & " >> " & quoted form of logPath
+	try
+		set out to ""
+		repeat with i in input
+			try
+				set p to POSIX path of i
+			on error
+				try
+					set p to POSIX path of (i as alias)
+				on error
+					set p to i as text
+				end try
+			end try
+			if p starts with "file://" then
+				set p to do shell script "/usr/bin/python3 -c 'from urllib.parse import unquote, urlparse; import sys; p=urlparse(sys.argv[1]); print(unquote(p.path))' " & quoted form of p
+			end if
+			if p is not "" then set out to out & p & linefeed
+		end repeat
+		if out is "" then
+			tell application "Finder"
+				activate
+				delay 0.3
+				set sel to selection
+				repeat with f in sel
+					set out to out & (POSIX path of (f as alias)) & linefeed
+				end repeat
+			end tell
+		end if
+		if out ends with linefeed then set out to text 1 thru -2 of out
+		set pathCount to 0
+		if out is not "" then set pathCount to count of paragraphs of out
+		do shell script "echo " & quoted form of (ts & " applescript paths=" & pathCount) & " >> " & quoted form of logPath
+		return out
+	on error errMsg number errNum
+		do shell script "echo " & quoted form of (ts & " applescript error " & errMsg & " (" & errNum & ")") & " >> " & quoted form of logPath
+		return ""
+	end try
+end run
+"""
+
+
+def finder_paths_applescript(slug: str) -> str:
+    return FINDER_PATHS_APPLESCRIPT.replace("__SLUG__", slug)
+
+
+def inject_script_logging(slug: str, script: str, kind: str) -> str:
+    body = textwrap.dedent(script).strip()
+    header = [f'vb_shell_start "{slug}"']
+    if kind == "finder":
+        header.extend(
+            [
+                "FILES=()",
+                'while IFS= read -r line; do',
+                '  [[ -n "$line" ]] && FILES+=("$line")',
+                'done < <(vb_collect_files "$@")',
+                f'vb_log "{slug}" "collected=${{#FILES[@]}}"',
+                'set -- "${FILES[@]}"',
+            ]
+        )
+    return "\n".join(header) + "\n" + body + "\n"
+
+
+def shell_script_action_xml(pkg: dict, script: str, *, input_uuid: str, output_uuid: str, action_uuid: str, input_method: int, accept_types: list[str]) -> str:
+    types_xml = "".join(f"\n\t\t\t\t\t<string>{t}</string>" for t in accept_types)
+    return f"""		<dict>
 			<key>action</key>
 			<dict>
 				<key>AMAccepts</key>
@@ -852,10 +1174,9 @@ def document_wflow(pkg: dict) -> str:
 					<key>Container</key>
 					<string>List</string>
 					<key>Optional</key>
-					<{optional}/>
+					<true/>
 					<key>Types</key>
-					<array>
-						<string>com.apple.cocoa.string</string>
+					<array>{types_xml}
 					</array>
 				</dict>
 				<key>AMActionVersion</key>
@@ -918,7 +1239,7 @@ def document_wflow(pkg: dict) -> str:
 				<key>Class Name</key>
 				<string>RunShellScriptAction</string>
 				<key>InputUUID</key>
-				<string>{uuid_for(pkg["slug"], 1)}</string>
+				<string>{input_uuid}</string>
 				<key>Keywords</key>
 				<array>
 					<string>Shell</string>
@@ -928,9 +1249,9 @@ def document_wflow(pkg: dict) -> str:
 					<string>Unix</string>
 				</array>
 				<key>OutputUUID</key>
-				<string>{uuid_for(pkg["slug"], 2)}</string>
+				<string>{output_uuid}</string>
 				<key>UUID</key>
-				<string>{uuid_for(pkg["slug"], 3)}</string>
+				<string>{action_uuid}</string>
 				<key>UnlocalizedApplications</key>
 				<array>
 					<string>Automator</string>
@@ -940,10 +1261,155 @@ def document_wflow(pkg: dict) -> str:
 			</dict>
 			<key>isViewVisible</key>
 			<integer>1</integer>
+		</dict>"""
+
+
+def applescript_paths_action_xml(pkg: dict) -> str:
+    slug = pkg["slug"]
+    input_uuid = uuid_for(slug, 10)
+    output_uuid = uuid_for(slug, 11)
+    action_uuid = uuid_for(slug, 12)
+    return f"""		<dict>
+			<key>action</key>
+			<dict>
+				<key>AMAccepts</key>
+				<dict>
+					<key>Container</key>
+					<string>List</string>
+					<key>Optional</key>
+					<true/>
+					<key>Types</key>
+					<array>
+						<string>com.apple.cocoa.path</string>
+						<string>com.apple.alias-record</string>
+						<string>com.apple.cocoa.string</string>
+					</array>
+				</dict>
+				<key>AMActionVersion</key>
+				<string>1.0.2</string>
+				<key>AMApplication</key>
+				<array>
+					<string>Automator</string>
+				</array>
+				<key>AMParameterProperties</key>
+				<dict>
+					<key>source</key>
+					<dict/>
+				</dict>
+				<key>AMProvides</key>
+				<dict>
+					<key>Container</key>
+					<string>List</string>
+					<key>Types</key>
+					<array>
+						<string>com.apple.cocoa.string</string>
+					</array>
+				</dict>
+				<key>ActionBundlePath</key>
+				<string>/System/Library/Automator/Run AppleScript.action</string>
+				<key>ActionName</key>
+				<string>Run AppleScript</string>
+				<key>ActionParameters</key>
+				<dict>
+					<key>source</key>
+					<string>{xml_escape(finder_paths_applescript(slug))}</string>
+				</dict>
+				<key>BundleIdentifier</key>
+				<string>com.apple.Automator.RunScript</string>
+				<key>CFBundleVersion</key>
+				<string>1.0.2</string>
+				<key>CanShowSelectedItemsWhenRun</key>
+				<false/>
+				<key>CanShowWhenRun</key>
+				<true/>
+				<key>Category</key>
+				<array>
+					<string>AMCategoryUtilities</string>
+				</array>
+				<key>Class Name</key>
+				<string>RunScriptAction</string>
+				<key>InputUUID</key>
+				<string>{input_uuid}</string>
+				<key>Keywords</key>
+				<array>
+					<string>Run</string>
+				</array>
+				<key>OutputUUID</key>
+				<string>{output_uuid}</string>
+				<key>UUID</key>
+				<string>{action_uuid}</string>
+				<key>UnlocalizedApplications</key>
+				<array>
+					<string>Automator</string>
+				</array>
+				<key>isViewVisible</key>
+				<integer>1</integer>
+			</dict>
+			<key>isViewVisible</key>
+			<integer>1</integer>
+		</dict>"""
+
+
+def document_wflow(pkg: dict) -> str:
+    slug = pkg["slug"]
+    body = SCRIPTS[slug][len(PRELUDE) :]
+    script = PRELUDE + inject_script_logging(slug, body, pkg["kind"])
+    input_method = 0 if pkg["kind"] in ("text", "finder") else 1
+    accept_types = (
+        ["com.apple.cocoa.path", "com.apple.cocoa.string"]
+        if pkg["kind"] == "finder"
+        else ["com.apple.cocoa.string"]
+    )
+    slug = pkg["slug"]
+    if pkg["kind"] == "finder":
+        as_out = uuid_for(slug, 11)
+        sh_in = uuid_for(slug, 1)
+        actions_xml = applescript_paths_action_xml(pkg) + "\n" + shell_script_action_xml(
+            pkg,
+            script,
+            input_uuid=sh_in,
+            output_uuid=uuid_for(slug, 2),
+            action_uuid=uuid_for(slug, 3),
+            input_method=input_method,
+            accept_types=accept_types,
+        )
+        connectors_xml = f"""	<key>connectors</key>
+	<dict>
+		<key>{as_out}</key>
+		<dict>
+			<key>from</key>
+			<string>{as_out} - {as_out}</string>
+			<key>to</key>
+			<string>{sh_in} - {sh_in}</string>
 		</dict>
+	</dict>"""
+    else:
+        actions_xml = shell_script_action_xml(
+            pkg,
+            script,
+            input_uuid=uuid_for(slug, 1),
+            output_uuid=uuid_for(slug, 2),
+            action_uuid=uuid_for(slug, 3),
+            input_method=input_method,
+            accept_types=accept_types,
+        )
+        connectors_xml = """	<key>connectors</key>
+	<dict/>"""
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>AMApplicationBuild</key>
+	<string>523</string>
+	<key>AMApplicationVersion</key>
+	<string>2.10</string>
+	<key>AMDocumentVersion</key>
+	<string>2</string>
+	<key>actions</key>
+	<array>
+{actions_xml}
 	</array>
-	<key>connectors</key>
-	<dict/>
+{connectors_xml}
 	<key>workflowMetaData</key>
 	<dict>
 {workflow_meta(pkg)}

@@ -8,4 +8,4 @@ Voicebox running locally.
 
 ## How to use
 
-Select an audio file (optional sibling `.srt`) → Quick Actions → **New Cloned Voice**. Enter a profile name.
+Select an audio file (optional sibling `.srt`) → Quick Actions → **New Cloned Voice**. Enter a profile name in the Finder dialog.
