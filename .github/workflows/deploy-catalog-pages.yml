@@ -7,8 +7,10 @@ on:
       - "index.json"
       - "packages/**"
       - "scripts/build-quick-actions-catalog.sh"
+      - "scripts/emit_packages.py"
       - ".github/workflows/deploy-catalog-pages.yml"
       - "README.md"
+      - "CHANGELOG.md"
   workflow_dispatch:
 
 permissions:
@@ -29,6 +31,37 @@ jobs:
 
       - name: Build catalog site
         run: ./scripts/build-quick-actions-catalog.sh build/catalog-site
+
+      - name: Verify workflow zips
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+
+          root = Path("build/catalog-site")
+          index = json.loads((root / "index.json").read_text(encoding="utf-8"))
+          errors = []
+          for entry in index.get("packages", []):
+              slug = Path(entry["path"]).name
+              pkg_dir = root / "packages" / slug
+              zip_path = pkg_dir / "workflow.zip"
+              pkg_json_path = pkg_dir / "package.json"
+              if not zip_path.is_file() or zip_path.stat().st_size == 0:
+                  errors.append(f"missing or empty workflow.zip for {slug}")
+                  continue
+              if not pkg_json_path.is_file():
+                  errors.append(f"missing package.json for {slug}")
+                  continue
+              meta = json.loads(pkg_json_path.read_text(encoding="utf-8"))
+              digest = hashlib.sha256(zip_path.read_bytes()).hexdigest()
+              expected = (meta.get("checksum") or "").removeprefix("sha256:")
+              if expected != digest:
+                  errors.append(f"checksum mismatch for {slug}")
+          if errors:
+              raise SystemExit("catalog verify failed:\n" + "\n".join(f"  - {e}" for e in errors))
+          print(f"verified {len(index['packages'])} workflow.zip files")
+          PY
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3

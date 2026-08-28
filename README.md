@@ -18,6 +18,17 @@ packages/<slug>/
 
 This repo **is** the catalog root (same shape as MenuCue’s `QuickActionsCatalog/`). `workflow.zip` files are not committed; CI builds them for GitHub Pages.
 
+## Build catalog zips
+
+After editing `scripts/emit_packages.py`, regenerate workflows and build the publishable tree locally:
+
+```bash
+python3 scripts/emit_packages.py
+./scripts/build-quick-actions-catalog.sh build/catalog-site
+```
+
+Output lands in `build/catalog-site/` (gitignored), including `packages/<slug>/workflow.zip` and checksums in each `package.json`. Push to `main` and the **Deploy Quick Actions Catalog** workflow rebuilds the same tree and publishes to GitHub Pages. You can also run that workflow manually from **Actions → Run workflow**.
+
 ## Install with MenuCue
 
 In MenuCue → **Quick Action Repo Manager…** → **Add Repository…**, paste:
