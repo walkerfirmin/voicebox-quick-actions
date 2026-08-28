@@ -492,6 +492,70 @@ vb_play() {
   fi
 }
 
+_vb_chunks_split_long() {
+  local text="$1" max_chunk="$2" seg=""
+  for word in ${=text}; do
+    if [[ -z "$seg" ]]; then
+      seg="$word"
+    elif (( ${#seg} + 1 + ${#word} &lt;= max_chunk )); then
+      seg="$seg $word"
+    else
+      CHUNKS+=("$seg")
+      seg="$word"
+    fi
+  done
+  [[ -n "$seg" ]] &amp;&amp; CHUNKS+=("$seg")
+}
+
+_vb_chunks_flush_pending() {
+  local text="$1" max_chunk="$2"
+  [[ -z "$text" ]] &amp;&amp; return
+  if (( ${#text} &gt; max_chunk )); then
+    _vb_chunks_split_long "$text" "$max_chunk"
+  else
+    CHUNKS+=("$text")
+  fi
+}
+
+vb_build_speak_chunks() {
+  local text="$1"
+  local min_chars="${VB_STREAM_MIN_CHARS:-80}"
+  local max_chunk="${VB_STREAM_MAX_CHUNK:-400}"
+  typeset -g -a CHUNKS
+  CHUNKS=()
+  typeset -a sentences
+  local sent pending merged
+  while IFS= read -r sent; do
+    sent="${sent## }"
+    sent="${sent%% }"
+    [[ -n "$sent" ]] &amp;&amp; sentences+=("$sent")
+  done &lt; &lt;(python3 - "$text" &lt;&lt;'PYEOF'
+import sys, re
+text = sys.argv[1]
+parts = re.split(r'(?&lt;=[.!?])\s+(?=[A-Z"\(\[])', text)
+for p in parts:
+    p = p.strip()
+    if p:
+        print(p)
+PYEOF
+)
+  pending=""
+  for sent in "${sentences[@]}"; do
+    if [[ -z "$pending" ]]; then
+      pending="$sent"
+    else
+      merged="$pending $sent"
+      if (( ${#pending} &lt; min_chars &amp;&amp; ${#merged} &lt;= max_chunk )); then
+        pending="$merged"
+      else
+        _vb_chunks_flush_pending "$pending" "$max_chunk"
+        pending="$sent"
+      fi
+    fi
+  done
+  _vb_chunks_flush_pending "$pending" "$max_chunk"
+}
+
 vb_transcribe_file() {
   local api="$1" f="$2"
   local cmd resp rc

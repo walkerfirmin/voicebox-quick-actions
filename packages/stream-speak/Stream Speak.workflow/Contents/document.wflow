@@ -492,6 +492,70 @@ vb_play() {
   fi
 }
 
+_vb_chunks_split_long() {
+  local text="$1" max_chunk="$2" seg=""
+  for word in ${=text}; do
+    if [[ -z "$seg" ]]; then
+      seg="$word"
+    elif (( ${#seg} + 1 + ${#word} &lt;= max_chunk )); then
+      seg="$seg $word"
+    else
+      CHUNKS+=("$seg")
+      seg="$word"
+    fi
+  done
+  [[ -n "$seg" ]] &amp;&amp; CHUNKS+=("$seg")
+}
+
+_vb_chunks_flush_pending() {
+  local text="$1" max_chunk="$2"
+  [[ -z "$text" ]] &amp;&amp; return
+  if (( ${#text} &gt; max_chunk )); then
+    _vb_chunks_split_long "$text" "$max_chunk"
+  else
+    CHUNKS+=("$text")
+  fi
+}
+
+vb_build_speak_chunks() {
+  local text="$1"
+  local min_chars="${VB_STREAM_MIN_CHARS:-80}"
+  local max_chunk="${VB_STREAM_MAX_CHUNK:-400}"
+  typeset -g -a CHUNKS
+  CHUNKS=()
+  typeset -a sentences
+  local sent pending merged
+  while IFS= read -r sent; do
+    sent="${sent## }"
+    sent="${sent%% }"
+    [[ -n "$sent" ]] &amp;&amp; sentences+=("$sent")
+  done &lt; &lt;(python3 - "$text" &lt;&lt;'PYEOF'
+import sys, re
+text = sys.argv[1]
+parts = re.split(r'(?&lt;=[.!?])\s+(?=[A-Z"\(\[])', text)
+for p in parts:
+    p = p.strip()
+    if p:
+        print(p)
+PYEOF
+)
+  pending=""
+  for sent in "${sentences[@]}"; do
+    if [[ -z "$pending" ]]; then
+      pending="$sent"
+    else
+      merged="$pending $sent"
+      if (( ${#pending} &lt; min_chars &amp;&amp; ${#merged} &lt;= max_chunk )); then
+        pending="$merged"
+      else
+        _vb_chunks_flush_pending "$pending" "$max_chunk"
+        pending="$sent"
+      fi
+    fi
+  done
+  _vb_chunks_flush_pending "$pending" "$max_chunk"
+}
+
 vb_transcribe_file() {
   local api="$1" f="$2"
   local cmd resp rc
@@ -532,28 +596,120 @@ vb_log stream-speak "text_len=${#TEXT}"
 if [[ -z "${TEXT//[$' \t\n\r']/}" ]]; then
   vb_fail "No text selected. Highlight text, then run this from the Services menu."
 fi
-if (( ${#TEXT} &gt; 500 )); then
-  TEXT="${TEXT:0:500}"
+MAX_CHARS=20000
+if (( ${#TEXT} &gt; MAX_CHARS )); then
+  vb_log stream-speak "truncating ${#TEXT} -&gt; $MAX_CHARS"
+  TEXT="${TEXT:0:MAX_CHARS}"
 fi
+command -v ffplay &gt;/dev/null || vb_fail "ffplay is required for chunked playback (brew install ffmpeg)."
 API="$(vb_ensure)"
 PICK="$(vb_choose_profile "$API")"
 PID="$(printf "%s\n" "$PICK" | sed -n '1p')"
 NAME="$(printf "%s\n" "$PICK" | sed -n '2p')"
 [[ -n "$NAME" ]] || exit 0
 vb_log stream-speak "voice=$NAME"
+
+export VB_STREAM_MIN_CHARS="${VB_STREAM_MIN_CHARS:-40}"
+export VB_STREAM_MAX_CHUNK="${VB_STREAM_MAX_CHUNK:-150}"
+vb_build_speak_chunks "$TEXT"
+(( ${#CHUNKS[@]} &gt; 0 )) || vb_fail "No speakable text after splitting."
+vb_log stream-speak "chunks=${#CHUNKS[@]}"
+for i in $(seq 1 ${#CHUNKS[@]}); do
+  vb_log stream-speak "chunk $i (${#CHUNKS[$i]} chars)"
+done
+
 STREAM_DIR="/tmp/vb-stream-speak"
+TIMESTAMP=$(date +%s)
 mkdir -p "$STREAM_DIR"
-OUT="${STREAM_DIR}/$(date +%Y%m%d-%H%M%S)-$$.wav"
+typeset -a AUDIO_FILES
+for i in $(seq 1 ${#CHUNKS[@]}); do
+  AUDIO_FILES+=("$STREAM_DIR/tts_${TIMESTAMP}_chunk${i}.wav")
+done
+
+_dispatch_stream() {
+  local idx=$1
+  local chunk_text="${CHUNKS[$idx]}"
+  local audio_file="${AUDIO_FILES[$idx]}"
+  rm -f "${audio_file}" "${audio_file}.ready" "${audio_file}.failed"
+  vb_log stream-speak "dispatch chunk $idx"
+  (
+    if vb_voicebox_stream "$API" "$PID" "$chunk_text" "$audio_file"; then
+      touch "${audio_file}.ready"
+    else
+      touch "${audio_file}.failed"
+    fi
+  ) &amp;
+}
+
+_wait_stream_chunk() {
+  local idx=$1
+  local audio_file="${AUDIO_FILES[$idx]}"
+  local wait_ticks=0
+  local max_ticks=$(( ${VB_STREAM_CHUNK_TIMEOUT:-120} * 20 ))
+  while true; do
+    if [[ -f "${audio_file}.ready" ]]; then
+      return 0
+    fi
+    if [[ -f "${audio_file}.failed" ]]; then
+      return 1
+    fi
+    sleep 0.05
+    (( wait_ticks++ )) || true
+    if (( wait_ticks &gt; max_ticks )); then
+      return 2
+    fi
+  done
+}
+
+_play_stream_chunk() {
+  local idx=$1
+  local audio_file="${AUDIO_FILES[$idx]}"
+  vb_log stream-speak "play chunk $idx $audio_file"
+  set +e
+  ffplay -nodisp -autoexit -loglevel error "$audio_file"
+  local rc=$?
+  set -e
+  rm -f "$audio_file" "${audio_file}.ready" "${audio_file}.failed"
+  return "$rc"
+}
+
+_dispatch_stream 1
+vb_ok "Streaming with ${NAME}"
+
 set +e
-vb_voicebox_stream "$API" "$PID" "$TEXT" "$OUT"
+_wait_stream_chunk 1
 rc=$?
 set -e
-if [[ $rc -ne 0 || ! -s "$OUT" ]]; then
-  vb_fail "Could not stream speech with ${NAME}. Is Voicebox running?"
+if [[ $rc -eq 1 ]]; then
+  vb_fail "Could not stream chunk 1 with ${NAME}. Is Voicebox running?"
+elif [[ $rc -eq 2 ]]; then
+  vb_fail "Timed out waiting for the first audio chunk."
 fi
-vb_log stream-speak "saved $OUT"
-vb_ok "Streaming with ${NAME}"
-vb_play "$OUT"
+
+if (( ${#CHUNKS[@]} &gt;= 2 )); then
+  _dispatch_stream 2
+fi
+_play_stream_chunk 1 || vb_fail "Playback failed for chunk 1."
+
+for i in $(seq 2 ${#CHUNKS[@]}); do
+  set +e
+  _wait_stream_chunk "$i"
+  rc=$?
+  set -e
+  if [[ $rc -eq 1 ]]; then
+    vb_log stream-speak "chunk $i synthesis failed, skipping"
+    continue
+  elif [[ $rc -eq 2 ]]; then
+    vb_log stream-speak "chunk $i timed out, skipping"
+    continue
+  fi
+  if (( i &lt; ${#CHUNKS[@]} )); then
+    _dispatch_stream $((i + 1))
+  fi
+  _play_stream_chunk "$i" || vb_log stream-speak "playback failed chunk $i"
+done
+
+vb_log stream-speak "done"
 </string>
 					<key>CheckedForUserDefaultShell</key>
 					<true/>

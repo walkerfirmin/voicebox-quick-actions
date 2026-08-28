@@ -15,9 +15,7 @@ All Automator Services now share the same shell prelude so they behave when run 
 
 ### Speech (Voicebox only)
 
-Speak Selection uses `POST /generate`, polls History, exports audio, and plays once locally (generation is saved in Voicebox).
-
-Stream Speak uses `POST /generate/stream`, saves each WAV under `/tmp/vb-stream-speak/`, then plays locally — matching how a remote client would fetch streamed audio and play it on its own system.
+Stream Speak uses `POST /generate/stream` one chunk at a time (~150 chars). While ffplay plays chunk *N*, chunk *N+1* synthesizes in the background. Supports up to 20,000 characters.
 
 Generate WAV from Text uses `POST /generate`, polls `GET /history/{id}` until `completed`, then `GET /history/{id}/export-audio` to save `<stem>.wav`.
 
