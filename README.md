@@ -41,4 +41,4 @@ Only HTTPS indexes are accepted.
 
 **Build first:** Speak Selection, Generate WAV from Text, Transcribe Audio, New Cloned Voice, Import Voice ZIP, Add Sample to Voice, Import Audio into Voicebox, Set Profile Avatar.
 
-**Nice later:** Export Voice, Load or Unload Qwen, Clear Voicebox Cache, Compose in Character, Stream Speak.
+**Nice later:** Export Voice, Load or Unload Qwen, Clear Voicebox Cache, Stream Speak.

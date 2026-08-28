@@ -13,9 +13,6 @@ ROOT = Path("/Users/admin/git/voicebox-quick-actions")
 PRELUDE = r"""
 set -euo pipefail
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
-CLIP_DIR="/Users/admin/Music/sample-audio-clips"
-TTS_HOST="http://127.0.0.1:8002"
-LAST_CLIP="$HOME/Library/Application Support/voicebox-quick-actions/last-profile.txt"
 LAST_VB="$HOME/Library/Application Support/voicebox-quick-actions/last-vb-profile.txt"
 
 vb_log() {
@@ -227,57 +224,6 @@ print(out)
 PY
 }
 
-vb_pick_clip_voice() {
-  python3 - "$CLIP_DIR" "$LAST_CLIP" "${VOICEBOX_PROFILE:-}" <<'PY'
-import json, os, subprocess, sys, tempfile
-from pathlib import Path
-clip, last_path, forced = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3].strip()
-voices, seen = [], set()
-for wav in sorted(clip.glob("*.wav")):
-    stem = wav.stem[:-4] if wav.stem.endswith("_10s") else wav.stem
-    label = " ".join(p.capitalize() if p.lower() != "and" else p for p in stem.split("_"))
-    if label.lower() in seen:
-        continue
-    seen.add(label.lower())
-    voices.append(label)
-if not voices:
-    sys.exit(2)
-if forced:
-    match = next((n for n in voices if n.lower() == forced.lower()), None)
-    if not match:
-        sys.exit(2)
-    last_path.parent.mkdir(parents=True, exist_ok=True)
-    last_path.write_text(match + "\n", encoding="utf-8")
-    print(match)
-    sys.exit(0)
-last = last_path.read_text(encoding="utf-8").strip() if last_path.exists() else ""
-default = last if last in voices else voices[0]
-quoted = ", ".join(json.dumps(n) for n in voices)
-script = f'''
-tell application "Finder"
-  activate
-  set voiceNames to {{{quoted}}}
-  set theChoice to choose from list voiceNames with title "Voicebox" with prompt "Choose a voice" default items {{{json.dumps(default)}}} OK button name "Speak" cancel button name "Cancel"
-  if theChoice is false then
-    return "CANCEL"
-  end if
-  return item 1 of theChoice
-end tell
-'''
-p = Path(tempfile.mkstemp(suffix=".applescript")[1])
-p.write_text(script)
-try:
-    out = subprocess.check_output(["osascript", str(p)], text=True).strip()
-finally:
-    p.unlink(missing_ok=True)
-if out in ("", "CANCEL", "false"):
-    sys.exit(0)
-last_path.parent.mkdir(parents=True, exist_ok=True)
-last_path.write_text(out + "\n", encoding="utf-8")
-print(out)
-PY
-}
-
 vb_choose_profile() {
   local api="$1" out rc
   set +e
@@ -403,66 +349,148 @@ print(out)
 PY
 }
 
-vb_mlx_synth() {
-  local name="$1" text="$2" out="$3"
-  python3 - "$TTS_HOST" "$CLIP_DIR" "$name" "$text" "$out" <<'PY'
-import json, re, sys, urllib.error, urllib.request
-from pathlib import Path
-host, clip_dir, name, text, out = sys.argv[1:6]
-clip = Path(clip_dir)
-slug = re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")
-wav = None
-for cand in (clip / f"{slug}_10s.wav", clip / f"{slug}.wav", clip / f"{slug}_10s.mp3"):
-    if cand.exists():
-        wav = cand
-        break
-if wav is None:
-    sys.stderr.write(f"no sample wav for {name} ({slug})\n")
-    sys.exit(3)
-stem = wav.stem.replace("_10s", "")
-srt = None
-for cand in (wav.with_suffix(".srt"), clip / f"{slug}.srt", clip / f"{stem}.srt"):
-    if cand.exists():
-        srt = cand
-        break
-ref = ""
-if srt is not None:
-    lines = []
-    for line in srt.read_text(encoding="utf-8", errors="replace").splitlines():
-        line = line.strip()
-        if not line or re.fullmatch(r"\d+", line) or re.match(r"\d{2}:\d{2}:\d{2}", line):
-            continue
-        lines.append(line)
-    ref = " ".join(lines)
-if not ref:
-    sys.stderr.write("missing reference transcript\n")
-    sys.exit(3)
-payload = json.dumps({
-    "model": "mlx-community/Qwen3-TTS-12Hz-0.6B-Base-6bit",
-    "input": text,
-    "ref_audio": str(wav),
-    "ref_text": ref,
-    "speed": 1.0,
-    "seed": 42,
-}).encode()
-req = urllib.request.Request(host + "/v1/audio/speech", data=payload, headers={"Content-Type": "application/json"}, method="POST")
-try:
-    with urllib.request.urlopen(req, timeout=90) as r:
-        Path(out).write_bytes(r.read())
-except urllib.error.HTTPError as e:
-    sys.stderr.write(e.read().decode("utf-8", "replace")[:500])
-    sys.exit(4)
-print(wav.name)
+vb_voicebox_wait() {
+  local api="$1" gen_id="$2"
+  /usr/bin/python3 - "$api" "$gen_id" <<'PY'
+import json, sys, time, urllib.error, urllib.request
+
+api, gen_id = sys.argv[1:3]
+for _ in range(90):
+    try:
+        with urllib.request.urlopen(api.rstrip("/") + f"/history/{gen_id}", timeout=10) as r:
+            row = json.loads(r.read().decode() or "{}")
+    except urllib.error.HTTPError as e:
+        print(e.read().decode("utf-8", "replace")[:500], file=sys.stderr)
+        sys.exit(4)
+    status = row.get("status") or ""
+    if status == "completed":
+        sys.exit(0)
+    if status == "failed":
+        print(row.get("error") or "Voicebox generation failed", file=sys.stderr)
+        sys.exit(4)
+    time.sleep(1)
+print("Voicebox generation timed out", file=sys.stderr)
+sys.exit(4)
 PY
 }
 
-vb_play() {
-  local f="$1"
-  if command -v ffplay >/dev/null; then
-    ffplay -nodisp -autoexit -loglevel error "$f"
-  else
-    afplay "$f"
+vb_voicebox_speak() {
+  local api="$1" name="$2" text="$3"
+  local rc err
+  set +e
+  err="$(/usr/bin/python3 - "$api" "$name" "$text" <<'PY'
+import json, sys, urllib.error, urllib.request
+
+api, name, text = sys.argv[1:4]
+body = json.dumps({"text": text, "profile": name}).encode()
+req = urllib.request.Request(
+    api.rstrip("/") + "/speak",
+    data=body,
+    headers={"Content-Type": "application/json"},
+    method="POST",
+)
+try:
+    with urllib.request.urlopen(req, timeout=30) as r:
+        gen = json.loads(r.read().decode() or "{}")
+except urllib.error.HTTPError as e:
+    print(e.read().decode("utf-8", "replace")[:500], file=sys.stderr)
+    sys.exit(4)
+except urllib.error.URLError as e:
+    print(str(e.reason)[:500], file=sys.stderr)
+    sys.exit(4)
+gen_id = gen.get("id")
+if not gen_id:
+    print(json.dumps(gen)[:500], file=sys.stderr)
+    sys.exit(4)
+print(gen_id)
+PY
+)"
+  rc=$?
+  set -e
+  if [[ $rc -ne 0 ]]; then
+    [[ -n "$err" ]] && vb_log "${VB_QA_SLUG:-voicebox}" "voicebox speak error: ${err:0:200}"
+    return "$rc"
   fi
+  set +e
+  vb_voicebox_wait "$api" "$err"
+  rc=$?
+  set -e
+  if [[ $rc -ne 0 ]]; then
+    vb_log "${VB_QA_SLUG:-voicebox}" "voicebox speak wait failed rc=$rc"
+    return "$rc"
+  fi
+  return 0
+}
+
+vb_voicebox_generate() {
+  local api="$1" profile_id="$2" text="$3" out="$4"
+  local rc err gen_id
+  set +e
+  err="$(/usr/bin/python3 - "$api" "$profile_id" "$text" <<'PY'
+import json, sys, urllib.error, urllib.request
+
+api, profile_id, text = sys.argv[1:4]
+body = json.dumps({"profile_id": profile_id, "text": text}).encode()
+req = urllib.request.Request(
+    api.rstrip("/") + "/generate",
+    data=body,
+    headers={"Content-Type": "application/json"},
+    method="POST",
+)
+try:
+    with urllib.request.urlopen(req, timeout=30) as r:
+        gen = json.loads(r.read().decode() or "{}")
+except urllib.error.HTTPError as e:
+    print(e.read().decode("utf-8", "replace")[:500], file=sys.stderr)
+    sys.exit(4)
+except urllib.error.URLError as e:
+    print(str(e.reason)[:500], file=sys.stderr)
+    sys.exit(4)
+gen_id = gen.get("id")
+if not gen_id:
+    print(json.dumps(gen)[:500], file=sys.stderr)
+    sys.exit(4)
+print(gen_id)
+PY
+)"
+  rc=$?
+  set -e
+  if [[ $rc -ne 0 ]]; then
+    [[ -n "$err" ]] && vb_log "${VB_QA_SLUG:-voicebox}" "voicebox generate error: ${err:0:200}"
+    return "$rc"
+  fi
+  gen_id="$err"
+  set +e
+  vb_voicebox_wait "$api" "$gen_id"
+  rc=$?
+  set -e
+  if [[ $rc -ne 0 ]]; then
+    vb_log "${VB_QA_SLUG:-voicebox}" "voicebox generate wait failed rc=$rc"
+    return "$rc"
+  fi
+  set +e
+  err="$(/usr/bin/python3 - "$api" "$gen_id" "$out" <<'PY'
+import sys, urllib.error, urllib.request
+from pathlib import Path
+
+api, gen_id, out = sys.argv[1:4]
+try:
+    with urllib.request.urlopen(api.rstrip("/") + f"/history/{gen_id}/export-audio", timeout=60) as r:
+        Path(out).write_bytes(r.read())
+except urllib.error.HTTPError as e:
+    print(e.read().decode("utf-8", "replace")[:500], file=sys.stderr)
+    sys.exit(4)
+print(out)
+PY
+)"
+  rc=$?
+  set -e
+  if [[ $rc -ne 0 ]]; then
+    [[ -n "$err" ]] && vb_log "${VB_QA_SLUG:-voicebox}" "voicebox export error: ${err:0:200}"
+    return "$rc"
+  fi
+  [[ -s "$out" ]] || return 1
+  return 0
 }
 
 vb_srt_text() {
@@ -529,29 +557,20 @@ fi
 if (( ${#TEXT} > 500 )); then
   TEXT="${TEXT:0:500}"
 fi
+API="$(vb_ensure)"
+PICK="$(vb_choose_profile "$API")"
+NAME="$(printf "%s\n" "$PICK" | sed -n '2p')"
+[[ -n "$NAME" ]] || exit 0
+vb_log SPEAK_SLUG "voice=$NAME"
 set +e
-NAME="$(vb_pick_clip_voice)"
+vb_voicebox_speak "$API" "$NAME" "$TEXT"
 rc=$?
 set -e
-if [[ $rc -eq 0 && -z "$NAME" ]]; then
-  vb_log SPEAK_SLUG "picker cancelled"
-  exit 0
+if [[ $rc -ne 0 ]]; then
+  vb_fail "Could not speak with ${NAME}. Is Voicebox running?"
 fi
-if [[ $rc -ne 0 || -z "$NAME" ]]; then
-  vb_fail "Could not show the voice picker."
-fi
-vb_log SPEAK_SLUG "voice=$NAME mlx :8002"
-OUT="/tmp/vb-SPEAK_SLUG.mp3"
-set +e
-vb_mlx_synth "$NAME" "$TEXT" "$OUT"
-rc=$?
-set -e
-if [[ $rc -ne 0 || ! -s "$OUT" ]]; then
-  vb_log SPEAK_SLUG "mlx failed rc=$rc"
-  vb_fail "Could not synthesize with $NAME (MLX TTS on port 8002)."
-fi
+vb_log SPEAK_SLUG "spoken via voicebox"
 vb_ok "Speaking with ${NAME}"
-vb_play "$OUT"
 '''
 
 SCRIPTS["speak-selection"] = PRELUDE + _SPEAK_BODY.replace("SPEAK_SLUG", "speak-selection")
@@ -559,17 +578,11 @@ SCRIPTS["stream-speak"] = PRELUDE + _SPEAK_BODY.replace("SPEAK_SLUG", "stream-sp
 
 SCRIPTS["generate-wav-from-text"] = PRELUDE + r'''
 (( $# > 0 )) || vb_fail "Select a text file in Finder."
-set +e
-NAME="$(vb_pick_clip_voice)"
-rc=$?
-set -e
-if [[ $rc -eq 0 && -z "$NAME" ]]; then
-  vb_log generate-wav-from-text "picker cancelled"
-  exit 0
-fi
-if [[ $rc -ne 0 || -z "$NAME" ]]; then
-  vb_fail "Could not show the voice picker."
-fi
+API="$(vb_ensure)"
+PICK="$(vb_choose_profile "$API")"
+PID="$(printf "%s\n" "$PICK" | sed -n '1p')"
+NAME="$(printf "%s\n" "$PICK" | sed -n '2p')"
+[[ -n "$NAME" ]] || exit 0
 vb_log generate-wav-from-text "voice=$NAME"
 for f in "$@"; do
   f="$(vb_normalize_path "$f")"
@@ -584,16 +597,16 @@ for f in "$@"; do
   DIR="$(dirname "$f")"
   BASE="$(basename "$f")"
   STEM="${BASE%.*}"
-  OUT="${DIR}/${STEM}.mp3"
+  OUT="${DIR}/${STEM}.wav"
   set +e
-  vb_mlx_synth "$NAME" "$TEXT" "$OUT"
+  vb_voicebox_generate "$API" "$PID" "$TEXT" "$OUT"
   rc=$?
   set -e
   if [[ $rc -ne 0 || ! -s "$OUT" ]]; then
-    vb_fail "Could not synthesize ${STEM}.mp3 with $NAME."
+    vb_fail "Could not synthesize ${STEM} with ${NAME}."
   fi
   vb_log generate-wav-from-text "wrote $OUT"
-  vb_ok "Saved ${STEM}.mp3 using ${NAME}."
+  vb_ok "Saved $(basename "$OUT") using ${NAME}."
 done
 '''
 
@@ -815,43 +828,28 @@ vb_log clear-cache "cleared"
 vb_ok "Cache cleared."
 '''
 
-SCRIPTS["compose-in-character"] = PRELUDE + r'''
-API="$(vb_ensure)"
-PICK="$(vb_choose_profile "$API")"
-PID="$(printf "%s\n" "$PICK" | sed -n '1p')"
-NAME="$(printf "%s\n" "$PICK" | sed -n '2p')"
-RESP="$(curl -sf --max-time 60 -X POST "${API}/profiles/${PID}/compose")" \
-  || vb_fail "Compose failed (the profile may need a personality prompt)."
-TEXT="$(printf "%s" "$RESP" | python3 -c 'import json,sys
-d=json.loads(sys.stdin.read() or "{}")
-print(d.get("text") or d.get("utterance") or d.get("content") or json.dumps(d))')"
-printf "%s" "$TEXT" | pbcopy
-vb_log compose-in-character "copied for $NAME"
-vb_ok "Copied in-character line for ${NAME}."
-'''
-
 PACKAGES = [
     {
         "slug": "speak-selection",
         "name": "Speak Selection",
-        "summary": "Speaks selected text in a chosen sample voice on your speakers.",
-        "readme": "Reads highlighted text aloud using the local MLX TTS server (port 8002) and a sample clip voice. Does not use Voicebox's 1.7B generate queue.",
+        "summary": "Speaks selected text with a Voicebox profile on your speakers.",
+        "readme": "Reads highlighted text aloud using a Voicebox cloned profile via `POST /speak`. Voicebox handles playback.",
         "tags": ["text", "voicebox", "speak"],
         "receives": ["text"],
         "kind": "text",
         "file_types": [],
-        "how": "Select text → Services → **Speak Selection**. A Finder voice list appears. Audio plays via MLX TTS on port 8002. Set `VOICEBOX_PROFILE` to skip the picker.",
+        "how": "Select text → Services → **Speak Selection** → pick a Voicebox profile. Set `VOICEBOX_PROFILE` to skip the picker.",
     },
     {
         "slug": "generate-wav-from-text",
         "name": "Generate WAV from Text",
-        "summary": "Turns a selected text file into spoken MP3 saved beside it.",
-        "readme": "Synthesizes a selected text file with the local MLX TTS server (port 8002) and saves `<stem>.mp3` next to the file. Does not use Voicebox's generate queue.",
+        "summary": "Turns a selected text file into spoken WAV saved beside it.",
+        "readme": "Synthesizes a selected text file with Voicebox `POST /generate` and saves `<stem>.wav` next to the file.",
         "tags": ["finder", "voicebox", "generate"],
         "receives": ["files"],
         "kind": "finder",
         "file_types": ["public.text"],
-        "how": "Select a `.txt` or `.md` file in Finder → Quick Actions → **Generate WAV from Text** → pick a voice. Uses MLX TTS on port 8002. Writes `<stem>.mp3` beside the file.",
+        "how": "Select a `.txt` or `.md` file in Finder → Quick Actions → **Generate WAV from Text** → pick a Voicebox profile. Writes `<stem>.wav` beside the file.",
     },
     {
         "slug": "transcribe-audio",
@@ -953,26 +951,15 @@ PACKAGES = [
         "how": "Run **Clear Voicebox Cache** from Services and confirm.",
     },
     {
-        "slug": "compose-in-character",
-        "name": "Compose in Character",
-        "summary": "Copies a fresh in-character line for a chosen voice to the clipboard.",
-        "readme": "Asks Voicebox for a fresh utterance in the chosen profile’s character voice (the compose API does not take the selected text as input) and copies the result to the clipboard.",
-        "tags": ["text", "voicebox", "llm"],
-        "receives": ["text"],
-        "kind": "text",
-        "file_types": [],
-        "how": "Select any text (or run from Services) → **Compose in Character** → pick a profile. Result is on the clipboard.",
-    },
-    {
         "slug": "stream-speak",
         "name": "Stream Speak",
-        "summary": "Speaks selected text via local MLX TTS (same path as Speak Selection).",
-        "readme": "Same as Speak Selection: Finder voice picker, then local MLX TTS on port 8002 and speaker playback. Does not use Voicebox `/generate/stream`.",
+        "summary": "Speaks selected text with a Voicebox profile (same path as Speak Selection).",
+        "readme": "Same as Speak Selection: Voicebox profile picker and `POST /speak` playback.",
         "tags": ["text", "voicebox", "speak"],
         "receives": ["text"],
         "kind": "text",
         "file_types": [],
-        "how": "Select text → Services → **Stream Speak** → pick a voice. Uses MLX on port 8002.",
+        "how": "Select text → Services → **Stream Speak** → pick a Voicebox profile.",
     },
 ]
 

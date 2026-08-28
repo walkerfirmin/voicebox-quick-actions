@@ -6,7 +6,7 @@
     {
       "id": "com.voicebox.quickaction.speak-selection",
       "name": "Speak Selection",
-      "summary": "Speaks selected text in a chosen sample voice on your speakers.",
+      "summary": "Speaks selected text with a Voicebox profile on your speakers.",
       "version": "1.0.0",
       "tags": [
         "text",
@@ -18,7 +18,7 @@
     {
       "id": "com.voicebox.quickaction.generate-wav-from-text",
       "name": "Generate WAV from Text",
-      "summary": "Turns a selected text file into spoken MP3 saved beside it.",
+      "summary": "Turns a selected text file into spoken WAV saved beside it.",
       "version": "1.0.0",
       "tags": [
         "finder",
@@ -133,21 +133,9 @@
       "path": "packages/clear-cache"
     },
     {
-      "id": "com.voicebox.quickaction.compose-in-character",
-      "name": "Compose in Character",
-      "summary": "Copies a fresh in-character line for a chosen voice to the clipboard.",
-      "version": "1.0.0",
-      "tags": [
-        "text",
-        "voicebox",
-        "llm"
-      ],
-      "path": "packages/compose-in-character"
-    },
-    {
       "id": "com.voicebox.quickaction.stream-speak",
       "name": "Stream Speak",
-      "summary": "Speaks selected text via local MLX TTS (same path as Speak Selection).",
+      "summary": "Speaks selected text with a Voicebox profile (same path as Speak Selection).",
       "version": "1.0.0",
       "tags": [
         "text",
