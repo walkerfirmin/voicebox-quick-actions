@@ -282,6 +282,109 @@ vb_ensure() {
   vb_fail "Voicebox is not running. Open Voicebox and try again."
 }
 
+vb_ensure_tts_ready() {
+  local api="$1" out rc
+  set +e
+  out="$(/usr/bin/python3 - "$api" &lt;&lt;'PY'
+import json, sys, time, urllib.error, urllib.parse, urllib.request
+
+api = sys.argv[1].rstrip("/")
+
+def get_json(url, timeout=15):
+    with urllib.request.urlopen(url, timeout=timeout) as r:
+        return json.loads(r.read().decode() or "{}")
+
+def post_json(url, payload, timeout=300):
+    data = None if payload is None else json.dumps(payload).encode()
+    headers = {"Content-Type": "application/json"} if data is not None else {}
+    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        body = r.read().decode() or "{}"
+        try:
+            return json.loads(body)
+        except Exception:
+            return {}
+
+try:
+    health = get_json(api + "/health", 5)
+except Exception as e:
+    print(f"ERROR:Could not reach Voicebox health: {e}")
+    sys.exit(2)
+if health.get("model_loaded"):
+    print(health.get("model_size") or "loaded")
+    sys.exit(0)
+
+try:
+    status = get_json(api + "/models/status", 15)
+except Exception as e:
+    print(f"ERROR:Could not list Voicebox models: {e}")
+    sys.exit(2)
+
+models = status.get("models") or []
+downloaded = [
+    m for m in models
+    if m.get("downloaded") and "whisper" not in str(m.get("model_name") or "").lower()
+]
+if not downloaded:
+    print(
+        "ERROR:No TTS model is downloaded. Download Qwen TTS 1.7B (or another voice model) in Voicebox, then try again."
+    )
+    sys.exit(2)
+
+prefer = ["qwen-tts-1.7B", "qwen-tts-0.6B", "kokoro", "luxtts"]
+choice = next((m for name in prefer for m in downloaded if m.get("model_name") == name), None)
+if choice is None:
+    choice = downloaded[0]
+model_name = choice["model_name"]
+
+def load_model(name: str) -&gt; None:
+    try:
+        post_json(api + "/models/load", {"model_name": name}, 300)
+        return
+    except Exception:
+        pass
+    upper = name.upper()
+    size = "1.7B" if "1.7" in upper else ("0.6B" if "0.6" in upper else None)
+    if not size:
+        raise RuntimeError(f"unsupported model for legacy load: {name}")
+    url = api + "/models/load?model_size=" + urllib.parse.quote(size, safe="")
+    req = urllib.request.Request(url, method="POST")
+    urllib.request.urlopen(req, timeout=300).read()
+
+try:
+    load_model(model_name)
+except Exception as e:
+    detail = str(e)
+    if isinstance(e, urllib.error.HTTPError):
+        detail = e.read().decode("utf-8", "replace")[:300] or detail
+    print(f"ERROR:Could not load {model_name}. {detail}")
+    sys.exit(2)
+
+for _ in range(90):
+    try:
+        health = get_json(api + "/health", 5)
+        if health.get("model_loaded"):
+            print(health.get("model_size") or model_name)
+            sys.exit(0)
+    except Exception:
+        pass
+    time.sleep(1)
+print("ERROR:Timed out waiting for the TTS model to load.")
+sys.exit(2)
+PY
+)"
+  rc=$?
+  set -e
+  if [[ $rc -ne 0 ]]; then
+    if [[ "$out" == ERROR:* ]]; then
+      vb_fail "${out#ERROR:}"
+    fi
+    vb_fail "No TTS model is ready. Download and load a model in Voicebox, then try again."
+  fi
+  [[ -n "${VB_QA_SLUG:-}" ]] &amp;&amp; vb_log "${VB_QA_SLUG}" "tts_ready=${out}"
+  printf "%s" "$out"
+}
+
 vb_write_text() {
   local path="$1" text="$2"
   if printf "%s\n" "$text" &gt; "$path" 2&gt;/dev/null; then
@@ -606,13 +709,18 @@ try:
     with urllib.request.urlopen(req, timeout=120) as r:
         data = r.read()
 except urllib.error.HTTPError as e:
-    print(e.read().decode("utf-8", "replace")[:500], file=sys.stderr)
+    body = e.read().decode("utf-8", "replace")[:500]
+    try:
+        detail = json.loads(body).get("detail") or body
+    except Exception:
+        detail = body
+    print(detail)
     sys.exit(4)
 except urllib.error.URLError as e:
-    print(str(e.reason)[:500], file=sys.stderr)
+    print(str(e.reason)[:500])
     sys.exit(4)
 if not data:
-    print("empty stream response", file=sys.stderr)
+    print("empty stream response")
     sys.exit(4)
 Path(out).write_bytes(data)
 print(out)
@@ -621,6 +729,7 @@ PY
   rc=$?
   set -e
   if [[ $rc -ne 0 ]]; then
+    VB_LAST_STREAM_ERR="${err:0:300}"
     [[ -n "$err" ]] &amp;&amp; vb_log "${VB_QA_SLUG:-voicebox}" "voicebox stream error: ${err:0:200}"
     return "$rc"
   fi
