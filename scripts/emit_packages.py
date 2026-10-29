@@ -720,17 +720,38 @@ export VB_STREAM_MAX_CHUNK="${VB_STREAM_MAX_CHUNK:-150}"
 vb_build_speak_chunks "$TEXT"
 (( ${#CHUNKS[@]} > 0 )) || vb_fail "No speakable text after splitting."
 vb_log stream-speak "chunks=${#CHUNKS[@]}"
-for i in $(seq 1 ${#CHUNKS[@]}); do
+for ((i=1; i<=${#CHUNKS[@]}; i++)); do
   vb_log stream-speak "chunk $i (${#CHUNKS[$i]} chars)"
 done
 
 STREAM_DIR="/tmp/vb-stream-speak"
 TIMESTAMP=$(date +%s)
 mkdir -p "$STREAM_DIR"
-typeset -a AUDIO_FILES
-for i in $(seq 1 ${#CHUNKS[@]}); do
+typeset -g -a AUDIO_FILES
+AUDIO_FILES=()
+for ((i=1; i<=${#CHUNKS[@]}; i++)); do
   AUDIO_FILES+=("$STREAM_DIR/tts_${TIMESTAMP}_chunk${i}.wav")
 done
+
+typeset -g -a VB_STREAM_PIDS
+VB_STREAM_PIDS=()
+VB_FFPLAY_PID=""
+
+vb_stream_cleanup() {
+  trap - EXIT INT TERM
+  local pid
+  if (( ${#VB_STREAM_PIDS[@]} > 0 )); then
+    for pid in "${VB_STREAM_PIDS[@]}"; do
+      kill "$pid" 2>/dev/null || true
+    done
+  fi
+  if [[ -n "${VB_FFPLAY_PID:-}" ]]; then
+    kill "$VB_FFPLAY_PID" 2>/dev/null || true
+  fi
+  pkill -P $$ 2>/dev/null || true
+  wait 2>/dev/null || true
+}
+trap 'vb_stream_cleanup' EXIT INT TERM
 
 _dispatch_stream() {
   local idx=$1
@@ -747,6 +768,7 @@ _dispatch_stream() {
       [[ -f "${audio_file}.failed" ]] || touch "${audio_file}.failed"
     fi
   ) &
+  VB_STREAM_PIDS+=($!)
 }
 
 _wait_stream_chunk() {
@@ -772,10 +794,14 @@ _wait_stream_chunk() {
 _play_stream_chunk() {
   local idx=$1
   local audio_file="${AUDIO_FILES[$idx]}"
+  local rc
   vb_log stream-speak "play chunk $idx $audio_file"
   set +e
-  ffplay -nodisp -autoexit -loglevel error "$audio_file"
-  local rc=$?
+  ffplay -nodisp -autoexit -loglevel error "$audio_file" &
+  VB_FFPLAY_PID=$!
+  wait "$VB_FFPLAY_PID"
+  rc=$?
+  VB_FFPLAY_PID=""
   set -e
   rm -f "$audio_file" "${audio_file}.ready" "${audio_file}.failed"
   return "$rc"
@@ -804,7 +830,7 @@ if (( ${#CHUNKS[@]} >= 2 )); then
 fi
 _play_stream_chunk 1 || vb_fail "Playback failed for chunk 1."
 
-for i in $(seq 2 ${#CHUNKS[@]}); do
+for ((i=2; i<=${#CHUNKS[@]}; i++)); do
   set +e
   _wait_stream_chunk "$i"
   rc=$?
