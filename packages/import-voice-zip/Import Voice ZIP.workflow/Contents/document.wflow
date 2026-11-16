@@ -282,107 +282,110 @@ vb_ensure() {
   vb_fail "Voicebox is not running. Open Voicebox and try again."
 }
 
-vb_ensure_tts_ready() {
-  local api="$1" out rc
-  set +e
-  out="$(/usr/bin/python3 - "$api" &lt;&lt;'PY'
-import json, sys, time, urllib.error, urllib.parse, urllib.request
+vb_resolve_loaded_tts() {
+  /usr/bin/python3 - "$1" &lt;&lt;'PY'
+import json, sys, urllib.request
 
 api = sys.argv[1].rstrip("/")
+# model_name -&gt; (engine, optional model_size)
+TTS_MODELS = {
+    "chatterbox-turbo": ("chatterbox_turbo", None),
+    "chatterbox-tts": ("chatterbox", None),
+    "luxtts": ("luxtts", None),
+    "kokoro": ("kokoro", None),
+    "tada-1b": ("tada", None),
+    "tada-3b-ml": ("tada", None),
+    "qwen-tts-1.7B": ("qwen", "1.7B"),
+    "qwen-tts-0.6B": ("qwen", "0.6B"),
+    "qwen-custom-voice-1.7B": ("qwen_custom_voice", "1.7B"),
+    "qwen-custom-voice-0.6B": ("qwen_custom_voice", "0.6B"),
+}
 
 def get_json(url, timeout=15):
     with urllib.request.urlopen(url, timeout=timeout) as r:
         return json.loads(r.read().decode() or "{}")
 
-def post_json(url, payload, timeout=300):
-    data = None if payload is None else json.dumps(payload).encode()
-    headers = {"Content-Type": "application/json"} if data is not None else {}
-    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        body = r.read().decode() or "{}"
-        try:
-            return json.loads(body)
-        except Exception:
-            return {}
-
-try:
-    health = get_json(api + "/health", 5)
-except Exception as e:
-    print(f"ERROR:Could not reach Voicebox health: {e}")
-    sys.exit(2)
-if health.get("model_loaded"):
-    print(health.get("model_size") or "loaded")
-    sys.exit(0)
-
 try:
     status = get_json(api + "/models/status", 15)
 except Exception as e:
-    print(f"ERROR:Could not list Voicebox models: {e}")
-    sys.exit(2)
+    print(json.dumps({"ok": False, "error": f"Could not list Voicebox models: {e}"}))
+    sys.exit(0)
 
-models = status.get("models") or []
-downloaded = [
-    m for m in models
-    if m.get("downloaded") and "whisper" not in str(m.get("model_name") or "").lower()
-]
-if not downloaded:
-    print(
-        "ERROR:No TTS model is downloaded. Download Qwen TTS 1.7B (or another voice model) in Voicebox, then try again."
-    )
-    sys.exit(2)
+loaded = []
+for m in status.get("models") or []:
+    name = str(m.get("model_name") or "")
+    if not m.get("loaded"):
+        continue
+    if "whisper" in name.lower():
+        continue
+    if name not in TTS_MODELS:
+        continue
+    engine, size = TTS_MODELS[name]
+    loaded.append({
+        "ok": True,
+        "engine": engine,
+        "model_name": name,
+        "model_size": size,
+        "display_name": m.get("display_name") or name,
+    })
 
-prefer = ["qwen-tts-1.7B", "qwen-tts-0.6B", "kokoro", "luxtts"]
-choice = next((m for name in prefer for m in downloaded if m.get("model_name") == name), None)
-if choice is None:
-    choice = downloaded[0]
-model_name = choice["model_name"]
+if loaded:
+    # Prefer non-qwen engines when both are loaded; otherwise first match.
+    preferred = next((x for x in loaded if x["engine"] not in ("qwen", "qwen_custom_voice")), loaded[0])
+    print(json.dumps(preferred))
+    sys.exit(0)
 
-def load_model(name: str) -&gt; None:
-    try:
-        post_json(api + "/models/load", {"model_name": name}, 300)
-        return
-    except Exception:
-        pass
-    upper = name.upper()
-    size = "1.7B" if "1.7" in upper else ("0.6B" if "0.6" in upper else None)
-    if not size:
-        raise RuntimeError(f"unsupported model for legacy load: {name}")
-    url = api + "/models/load?model_size=" + urllib.parse.quote(size, safe="")
-    req = urllib.request.Request(url, method="POST")
-    urllib.request.urlopen(req, timeout=300).read()
-
+# Legacy health fallback (Qwen path only populates model_loaded/model_size)
 try:
-    load_model(model_name)
+    health = get_json(api + "/health", 5)
 except Exception as e:
-    detail = str(e)
-    if isinstance(e, urllib.error.HTTPError):
-        detail = e.read().decode("utf-8", "replace")[:300] or detail
-    print(f"ERROR:Could not load {model_name}. {detail}")
-    sys.exit(2)
+    print(json.dumps({"ok": False, "error": f"Could not reach Voicebox health: {e}"}))
+    sys.exit(0)
 
-for _ in range(90):
-    try:
-        health = get_json(api + "/health", 5)
-        if health.get("model_loaded"):
-            print(health.get("model_size") or model_name)
-            sys.exit(0)
-    except Exception:
-        pass
-    time.sleep(1)
-print("ERROR:Timed out waiting for the TTS model to load.")
-sys.exit(2)
+if health.get("model_loaded"):
+    size = str(health.get("model_size") or "").strip() or None
+    print(json.dumps({
+        "ok": True,
+        "engine": "qwen",
+        "model_name": f"qwen-tts-{size}" if size else "qwen",
+        "model_size": size,
+        "display_name": size or "qwen",
+    }))
+    sys.exit(0)
+
+print(json.dumps({
+    "ok": False,
+    "error": "No TTS model is loaded. Load a model in Voicebox (or run Load Voicebox Model), then try again.",
+}))
 PY
-)"
+}
+
+vb_ensure_tts_ready() {
+  local api="$1" out rc engine name size
+  set +e
+  out="$(vb_resolve_loaded_tts "$api")"
   rc=$?
   set -e
-  if [[ $rc -ne 0 ]]; then
-    if [[ "$out" == ERROR:* ]]; then
-      vb_fail "${out#ERROR:}"
-    fi
-    vb_fail "No TTS model is ready. Download and load a model in Voicebox, then try again."
+  if [[ $rc -ne 0 || -z "$out" ]]; then
+    vb_fail "No TTS model is loaded. Load a model in Voicebox, then try again."
   fi
-  [[ -n "${VB_QA_SLUG:-}" ]] &amp;&amp; vb_log "${VB_QA_SLUG}" "tts_ready=${out}"
-  printf "%s" "$out"
+  engine="$(printf "%s" "$out" | /usr/bin/python3 -c 'import json,sys; d=json.loads(sys.stdin.read() or "{}"); print(d.get("engine") or "")')"
+  name="$(printf "%s" "$out" | /usr/bin/python3 -c 'import json,sys; d=json.loads(sys.stdin.read() or "{}"); print(d.get("model_name") or d.get("display_name") or "")')"
+  size="$(printf "%s" "$out" | /usr/bin/python3 -c 'import json,sys; d=json.loads(sys.stdin.read() or "{}"); print(d.get("model_size") or "")')"
+  ok="$(printf "%s" "$out" | /usr/bin/python3 -c 'import json,sys; d=json.loads(sys.stdin.read() or "{}"); print("1" if d.get("ok") else "0")')"
+  err="$(printf "%s" "$out" | /usr/bin/python3 -c 'import json,sys; d=json.loads(sys.stdin.read() or "{}"); print(d.get("error") or "")')"
+  if [[ "$ok" != "1" ]]; then
+    vb_fail "${err:-No TTS model is loaded. Load a model in Voicebox, then try again.}"
+  fi
+  # Export for stream/generate children unless caller already overrode.
+  if [[ -z "${VOICEBOX_ENGINE:-}" &amp;&amp; -n "$engine" ]]; then
+    export VOICEBOX_ENGINE="$engine"
+  fi
+  if [[ -z "${VOICEBOX_MODEL_SIZE:-}" &amp;&amp; -n "$size" ]]; then
+    export VOICEBOX_MODEL_SIZE="$size"
+  fi
+  [[ -n "${VB_QA_SLUG:-}" ]] &amp;&amp; vb_log "${VB_QA_SLUG}" "tts_ready=${name:-$engine}${size:+ size=$size}"
+  printf "%s" "${name:-$engine}"
 }
 
 vb_write_text() {
@@ -602,15 +605,45 @@ import json, os, sys, urllib.error, urllib.request
 
 api, profile_id, text = sys.argv[1:4]
 payload = {"profile_id": profile_id, "text": text}
+engine = os.environ.get("VOICEBOX_ENGINE", "").strip()
 model_size = os.environ.get("VOICEBOX_MODEL_SIZE", "").strip()
-if not model_size:
+if not engine and not model_size:
+    TTS_MODELS = {
+        "chatterbox-turbo": ("chatterbox_turbo", None),
+        "chatterbox-tts": ("chatterbox", None),
+        "luxtts": ("luxtts", None),
+        "kokoro": ("kokoro", None),
+        "tada-1b": ("tada", None),
+        "tada-3b-ml": ("tada", None),
+        "qwen-tts-1.7B": ("qwen", "1.7B"),
+        "qwen-tts-0.6B": ("qwen", "0.6B"),
+        "qwen-custom-voice-1.7B": ("qwen_custom_voice", "1.7B"),
+        "qwen-custom-voice-0.6B": ("qwen_custom_voice", "0.6B"),
+    }
+    try:
+        with urllib.request.urlopen(api.rstrip("/") + "/models/status", timeout=15) as r:
+            models = json.loads(r.read().decode() or "{}").get("models") or []
+        loaded = []
+        for m in models:
+            name = str(m.get("model_name") or "")
+            if m.get("loaded") and name in TTS_MODELS:
+                loaded.append((name, *TTS_MODELS[name]))
+        if loaded:
+            choice = next((x for x in loaded if x[1] not in ("qwen", "qwen_custom_voice")), loaded[0])
+            engine, model_size = choice[1], (choice[2] or "")
+    except Exception:
+        pass
+if not engine and not model_size:
     try:
         with urllib.request.urlopen(api.rstrip("/") + "/health", timeout=5) as r:
             health = json.loads(r.read().decode() or "{}")
         if health.get("model_loaded") and health.get("model_size"):
             model_size = str(health["model_size"])
+            engine = "qwen"
     except Exception:
         pass
+if engine:
+    payload["engine"] = engine
 if model_size:
     payload["model_size"] = model_size
 body = json.dumps(payload).encode()
@@ -687,15 +720,45 @@ from pathlib import Path
 
 api, profile_id, text, out = sys.argv[1:5]
 payload = {"profile_id": profile_id, "text": text}
+engine = os.environ.get("VOICEBOX_ENGINE", "").strip()
 model_size = os.environ.get("VOICEBOX_MODEL_SIZE", "").strip()
-if not model_size:
+if not engine and not model_size:
+    TTS_MODELS = {
+        "chatterbox-turbo": ("chatterbox_turbo", None),
+        "chatterbox-tts": ("chatterbox", None),
+        "luxtts": ("luxtts", None),
+        "kokoro": ("kokoro", None),
+        "tada-1b": ("tada", None),
+        "tada-3b-ml": ("tada", None),
+        "qwen-tts-1.7B": ("qwen", "1.7B"),
+        "qwen-tts-0.6B": ("qwen", "0.6B"),
+        "qwen-custom-voice-1.7B": ("qwen_custom_voice", "1.7B"),
+        "qwen-custom-voice-0.6B": ("qwen_custom_voice", "0.6B"),
+    }
+    try:
+        with urllib.request.urlopen(api.rstrip("/") + "/models/status", timeout=15) as r:
+            models = json.loads(r.read().decode() or "{}").get("models") or []
+        loaded = []
+        for m in models:
+            name = str(m.get("model_name") or "")
+            if m.get("loaded") and name in TTS_MODELS:
+                loaded.append((name, *TTS_MODELS[name]))
+        if loaded:
+            choice = next((x for x in loaded if x[1] not in ("qwen", "qwen_custom_voice")), loaded[0])
+            engine, model_size = choice[1], (choice[2] or "")
+    except Exception:
+        pass
+if not engine and not model_size:
     try:
         with urllib.request.urlopen(api.rstrip("/") + "/health", timeout=5) as r:
             health = json.loads(r.read().decode() or "{}")
         if health.get("model_loaded") and health.get("model_size"):
             model_size = str(health["model_size"])
+            engine = "qwen"
     except Exception:
         pass
+if engine:
+    payload["engine"] = engine
 if model_size:
     payload["model_size"] = model_size
 body = json.dumps(payload).encode()
